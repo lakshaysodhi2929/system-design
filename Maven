@@ -1,0 +1,15 @@
+In maven there are snapshot repositories like Nexus, Artifactory, GitLab Package Registry
+
+the version of a package lets say 1.2.3-SNAPSHOT, now it has -SNAPSHOT at the end so by default maven treat it as editable means a new build can be deployed under this version
+that's why this is instable, this can be used in stage and development environments
+
+example for stage we can have a pipeline that takes this verison 1.2.3-SNAPSHOT and deploy 1.2.3-STAGE-SNAPSHOT and the consumer/downstream can use this but for production if 
+someone just rebuild then this would create a problem as it can introduce bugs.
+
+so in production pipeline 1.2.3-SNAPSHOT would transform into version 1.2.3 and by default maven treat this as uneditable (because it doesn't have -SNAPSHOT in end)
+consumer can use 1.2.3 here.
+
+Generally in production the version from repo is fetched(1.2.3-SNAPSHOT) and new version is made using incrementing(1.2.4) it and that is deployed which is uneditable and by using 
+some bot or job that new version(1.2.4-SNAPSHOT) is pushed in repo pom file in stage and prod branch.
+
+
