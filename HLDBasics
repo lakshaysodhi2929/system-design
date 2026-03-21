@@ -1,0 +1,179 @@
+Relational databases
+ACID
+
+main ISOLATION
+means if more than 1 transation happens concurrently how system keeps them seperate to produce output
+there are 4 main isolation levels: suppose 2 transations are happening simultaneously
+-> repeatable reads
+    -> whatever is the value in the table on first read will remain as it is untill the transation ends. does not have a impact of other transations updating that value
+-> read commit 
+    -> if t2 commits the next read of t1 will get a updated value
+-> read uncommit
+    -> if t2 just updates without commiting t1 will still get that updated value on read but if t1 rolled back instead of commit then that would be a dirty read for t1
+-> serializable  
+    -> if t1 starts a read then t2 gets blocked for write of that row untill t1 commit or rollback, or if t1 starts writing t2 gets blocked on reading and writing untill commit
+    or rollback.
+
+scaling databases
+horizonatlly
+adding read replicas[read heavy system]
+-> sync : the write on master complete when the replication is completed, this ensure no replication lag but adds a latency in api
+whenever read opp is required connection with read replica is made.[strong consistency]
+-> async: the replica periodically ask master for queries it has executed after pervious interval and does those queries on itself here,
+relpication lag exists but latency is not there.
+
+what if we want to scale write/master node[write heavy system]
+sharding is the way we can have partitians that handles exhastive set of requests.
+
+
+partitioning: when data is split into subsets
+sharding: when databases are split
+
+no sharding no partitioning: can't scale more but simple
+no sharding but partitioning: to segregate things, like in microservices[but with less load]
+sharding and partitioning: to scale things independantly like in microservices
+sharding but not partitioning: like the case of read replicas
+
+advs of sharding:
+high availability
+storage inc
+handle large read and writes
+
+dis advs
+ops complex
+cross -shard queries are expensive so shards are made in such a way that there data have to interact minimal
+
+
+non relational databases
+these are generally considered scallable because they assume data would be present in more than 1 node
+there are diff type of non realtional databases
+-> document db's -> mongo Db: here DB know the structure of value stored in it hence some filtering and sorting is allowed
+but joins, cascade deletes [using forign key], transactional nature [ACID properties] is not possible after a certain extent
+-> key value -> redis, Aerospike: they are just key value stores they don't even care about structure of object but are fast for processing
+-> graph -> neo4j, Dgraph: if Data can be organised in terms of graph + we want to use graph algos on data like LCA , shortest path etc then we can use them.
+
+if we remove the properties/features from relational db like joins or transactional nature it performs like non relational only
+
+
+caching
+Things that we want to access frequently we store in cache 
+cache sits in between db and application server
+general use case: Lazy population
+data tried to be accessed from cache then we find a cache miss we get it form DB then populate in cache[in hope that it will be accessed soon again] and pass to user
+
+write go both to DB and cache
+here write goes to both but in cache after ttl exipre it get's removed eg like cricket commentry user can directly read from cache it is way faster if some user want to see old
+info he will get from db, if we try to do it with that lazy way then it would be a lot slower
+
+push data in cache
+when on some pattern we decide to push some data in cache might be that data is published in db previously, like youtube recommendation videos that is in cache because user most
+likely click and see that videos
+
+cache scaling they are scaled like db's only if read heavy then replicas are enough else if there is a lot of data to be cached we can do sharding
+
+caching comes with a disadvantage of -> invalidation[when not valid delete] and stale data
+
+places where we can cache
+-> in browser on client side provide a great experience to user but if we are ok of providing some stale data than we should use it
+
+-> CDN 
+it is a example of lazy populated cache where request goes to the host server if data is not present in CDN.
+
+-> remote cache in application server
+
+-> database cache suppose if on certain transaction we store it's result in some table field whenever we want to see that result we don't have to perform that expensive 
+opp that is also a cache
+
+we can have cache at a lot of places that doesn't mean that we should have it all because it comes with a task to invalidate it every where or being ok to serve stale data.
+
+Queuing
+A Major usecase of queuing is doing task concurrently, that could be achieved by multithreading then why queuing is requied as it will have low latency?
+-> As suppose we have hundreds of task to be executed we can't assign each task to one thread as there is a limit, so we have to make a schedular and have a buffer that holds
+the task, queuing not only provides this out of the box but also decouples the system as this schedular can be on different machine and instead of thread of the same machine
+ we have consumers that run on differnt machine. which make it fault tolerant also.
+Message queues
+
+for async processing queues are generally used cosumers pull the message do the processing and then delete message from queue, if the message is not deleted due to some failure 
+that message is again consumed by some consumer then will be deleted, so we have to be ok for processing it again or have dedupe check.
+
+But the problem here is suppose on publishing a message in queue consumer have to do 2 tasks if task one suceeds but second fails then eaither we will get inconsistent state if we 
+delete the message or we will have to do the first again if we choose to consume message again,
+if we argue to make 2 queues for these 2 diff task then it might be the publishing in 1 got successful but 2nd got unsuccessful due to some failure as we are keeping publishing as 
+sync task only, so to solve this message streams comes into picture.
+
+Message streams
+
+here the message streams is also a queue but with different set of consumers that are watching over it by iterating over the messages to consume them and keeping the offset of
+consumed messages, messages of this queue are not deleted because diff consumer would be having different offset. Now this would solve the above problem.
+
+
+Kafka as a Queuing mechanism
+-> producers produce message with topics
+    -> messages are like [headers, key, value, timestamp]
+-> kafka brokers or servers (multiple brokers form kafka cluster) can have multiple partitions (phisical divisions) each partitian belongs to a topic (logical division) 
+    for a topic lets suppose we have 3 partitians [p0,p1,p2] they can have there replica partitians across different brokers [to keep system running if broker dies]
+    each partitian have one leader on a broker read and write happens on leader replicas are just for fault tolerance. Kafka have a mapping between partitian and broker to
+    route message.[Key of meesage gets hashed to find partitian through mapping broker could be found.]
+-> if a consumer group has subscribed to a topic then one partitian in a broker would only be consumed by one consumer in a consumer group, that consumer can consume different
+    partitians even from different topics, in different consumer groups that same partitian can be consumed by some consumer. but for a same consumer group no 2 consumer can
+    consume same partitian.
+-> partitian for a topic decide how much parallely we want data to be consumed within a consumer group.
+
+
+Notes: https://www.hellointerview.com/learn/system-design/deep-dives/kafka
+
+so pub sub is a pattern that is implemented by kafka/rabbitmq/redis
+where publisher publishes the messages and system pushes messages to consumers, kafka can do it eaisly due to already diff consumer subscriber architecture, while in rabbit mq this
+is done by exchange here for a single message multiple queues are made and multiple consumer then can get message from it.
+
+Real Time Pub/subscriber
+here reliablity is not important, speed and low latency is needed no buffer for storing message is there as soon as the message come it gets passed on to all the consumers
+Redis provides a gread implementation for real time pub/sub, as things happen in memory so no disk IO as soon as message come it gets fanned out to diff subs like in chatRoom.
+
+based on ussage we can say kafka and Mq pub sub is for contolled fan out like for services as a subscriber but redis is for mass like people are subscriber.
+
+Load balancers
+advantages
+horizontal scalling is eaiser 
+availability increases
+
+circuit breaker
+when there is a transitive dependancy in services and suppose if one fails it might have cascading effect beacuse requests are comming at similar pace, so it' better to have 
+circuit breaker like a db that have healthiness info of all the services and services first query circuit breaker service before querying main service and if that is not healthy 
+don't call just have a default handeling so that system is not chocked, what if circuit breaker service gets down to prevent this have cache in all services instead of querying
+health data every time if there is any config change how that is passed on to services -> through redis pub/sub
+
+leader Election
+Generally application servers are stateless if one of them goes down another one will take care of request and then a new one will get added to group, but who checks that one node
+went down that is the job of orchestrator now who has a check on orchestrator so that forms a chain, so leader election comes into picture to solve this, like there are orchestrator
+workers which see the nodes and orchestrator leader which sees the worker if leader goes down one of the worker gets promoted.
+
+HTTP 1.1,2,3
+HTTP is a format to send request over TCP to a web server 
+first with the server a TCP connection is established via 3 way handshake then request is send and when response comes then a 2 way termination is done to close connection
+
+if we want to keep connection as is, in headers of request we can set keep alive as true if server support this the connection will be open
+
+now that's the base of web sockets if the connection is open then server can send info to client without asking so that enables 2 way communications which is used in chat apps.
+
+Bloom filter
+
+this is a DS used by recommendation engins, suppose recommendation engine provide a list of videos for a user but no one wants to see the videos that they have alreay watched so
+simply we can keep a set of all watched video ids and check if something is already watched just don't recommend that, but that is not space efficient as data grows 
+
+so one observation is if somebody have watched something it can't be unwatched so we can use that 
+
+we are using stream of bits as a hash map 
+so we can hash video Id by the size of bloom filter and make that bit 1 whenever we want to check if a video is watched we can check that bit, if that is off that means 100% that
+video is not watched but if that is on then we are not sure if that is watched so we can discard that from recommending, so yeah bloom filters give false positive some times
+but have high performance. we can decide the size of bloom filters by a formula that would be based on the keys that we are ingesting and false positive rates that we can tolerate.
+
+Consistent hashing 
+To distribute data equaly or to find who is the owner of the data.<watch video>
+
+Distributed computing[eg spark]
+for processing Big Data tools are used to parallelise the process like spark, the comodity hardware are used, one is the cordinator[it checks workers] other are workers then that work is transformed
+or cumilated by spark or other tool, we just need to write the bussiness logic rest is managed by the tool.
+
+for Big data processing[hadoop] -> Generally here data doesn't comes for processing instead the code goes over to where the data is and processed output comes to get 
+cumilated and tranformed into response.
