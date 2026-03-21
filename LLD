@@ -1,0 +1,761 @@
+SOLID
+-> Single responsibility Principle: entities[class,module, function] should have single responsibility that makes it more readable, maintainable and easy to extend.
+-> Open and close Principle: entities should be open to extension but close for modification, it's better to add more code if we want to add new functionality rather than modifying 
+    old code as it would require alot of testing to check previous code is working as expected. This automatically makes system loosely coupled.
+-> Liscove substitution principle: child class should replace parent class seamlessly
+-> Interface segregation principle: create smaller more focused interfaces, rather than bloating one, with everything. It would just induce unnecessary dependencies.
+-> Dependancy Inversion Principle: classes should depend on abstraction rather than concreate implementation, as it promotes decoupling and facilitates testing and maintaninablity
+
+DRY: Don't repeat youself, so that change at one place reflectes everywhere else
+
+Design Patterns
+
+-> Factory: 
+    used for centralised object creation, best suited for application that need to create a variety of objects 
+    suppose we want to create objects of different types of car classes which have a parent class as car so we can make carFactory and centalize object creation.
+
+    // Product Interface
+interface Notification {
+    void notifyUser();
+}
+
+// Concrete Products
+class EmailNotification implements Notification {
+    public void notifyUser() { System.out.println("Email notification sent"); }
+}
+class SMSNotification implements Notification {
+    public void notifyUser() { System.out.println("SMS notification sent"); }
+}
+
+// Factory
+class NotificationFactory {
+    public static Notification createNotification(String type) {
+        return switch (type.toLowerCase()) {
+            case "email" -> new EmailNotification();
+            case "sms" -> new SMSNotification();
+            default -> throw new IllegalArgumentException("Unknown type");
+        };
+    }
+}
+
+// Usage
+public class FactoryDemo {
+    public static void main(String[] args) {
+        Notification n = NotificationFactory.createNotification("email");
+        n.notifyUser();
+    }
+}
+
+-> Abstract Factory:
+    If we follow the same analogy, abstracting out the carFactory and extending different car brand factory it folows the open closed principle and make 
+    the code more modular.
+
+    // Abstract Products
+interface Button { void render(); }
+interface Checkbox { void render(); }
+
+// Concrete Products (Windows)
+class WinButton implements Button { public void render() { System.out.println("Windows Button"); } }
+class WinCheckbox implements Checkbox { public void render() { System.out.println("Windows Checkbox"); } }
+
+// Concrete Products (Mac)
+class MacButton implements Button { public void render() { System.out.println("Mac Button"); } }
+class MacCheckbox implements Checkbox { public void render() { System.out.println("Mac Checkbox"); } }
+
+// Abstract Factory
+interface GUIFactory {
+    Button createButton();
+    Checkbox createCheckbox();
+}
+
+// Concrete Factories
+class WinFactory implements GUIFactory {
+    public Button createButton() { return new WinButton(); }
+    public Checkbox createCheckbox() { return new WinCheckbox(); }
+}
+class MacFactory implements GUIFactory {
+    public Button createButton() { return new MacButton(); }
+    public Checkbox createCheckbox() { return new MacCheckbox(); }
+}
+
+// Usage
+public class AbstractFactoryDemo {
+    public static void main(String[] args) {
+        GUIFactory factory = new MacFactory();
+        factory.createButton().render();
+        factory.createCheckbox().render();
+    }
+}
+
+-> Builder: 
+    don't need to make constructors for all combination of parameters provides more clean code with flexibility.
+
+    class User {
+    // Required + Optional fields
+    private final String username;
+    private final String email;
+    private final int age;
+    private final String phone;
+
+    private User(Builder b) {
+        this.username = b.username;
+        this.email = b.email;
+        this.age = b.age;
+        this.phone = b.phone;
+    }
+
+    public static class Builder {
+        private final String username;     // required
+        private final String email;        // required
+        private int age;                   // optional
+        private String phone;              // optional
+
+        public Builder(String username, String email) {
+            this.username = username;
+            this.email = email;
+        }
+
+        public Builder age(int age) {
+            this.age = age;
+            return this;
+        }
+
+        public Builder phone(String phone) {
+            this.phone = phone;
+            return this;
+        }
+
+        public User build() {
+            return new User(this);
+        }
+    }
+}
+
+// Usage
+public class BuilderDemo {
+    public static void main(String[] args) {
+        User user = new User.Builder("lakshay", "abc@xyz.com")
+                .age(25)
+                .phone("999000111")
+                .build();
+    }
+}
+
+-> singleton:
+    if we want a single instance, or to have a more centalised control for that class. we should have getIntance with double lock syncronised for thread safety.
+
+    public class Singleton {
+    private static volatile Singleton instance;
+
+    private Singleton() {} // prevent external construction
+
+    public static Singleton getInstance() {
+        if (instance == null) {                      // First check (performance)
+            synchronized (Singleton.class) {
+                if (instance == null) {              // Second check (thread safety)
+                    instance = new Singleton();
+                }
+            }
+        }
+        return instance;
+    }
+}
+
+-> prototype:
+-> when we want to clone things and want to have little modifications, like game characters or template.
+    I think we can achieve just by having builder with default values
+
+    abstract class Shape implements Cloneable {
+    int x, y;
+    String color;
+
+    public Shape() {}
+    public Shape(Shape source) {
+        this.x = source.x;
+        this.y = source.y;
+        this.color = source.color;
+    }
+
+    @Override
+    public Shape clone() {
+        try {
+            return (Shape) super.clone();   // shallow clone
+        } catch (CloneNotSupportedException e) {
+            throw new AssertionError();
+        }
+    }
+}
+
+class Circle extends Shape {
+    int radius;
+    public Circle(int radius) { this.radius = radius; }
+}
+
+public class PrototypeDemo {
+    public static void main(String[] args) {
+        Circle c1 = new Circle(10);
+        c1.color = "red";
+
+        Circle c2 = (Circle) c1.clone();
+        c2.color = "blue";
+
+        System.out.println(c1.color); // red
+        System.out.println(c2.color); // blue
+    }
+}
+
+Behavioral Design pattern
+
+-> Strategy design Pattern
+when we have multiple ways to do same thing we can have multiple strategies extending from same interface.
+difference from factory is just object creation logic is transfered at users end and the action method is directly called -> following same example
+
+    // Product Interface
+interface Notification {
+    void notifyUser();
+}
+
+// Concrete Products
+class EmailNotification implements Notification {
+    public void notifyUser() { System.out.println("Email notification sent"); }
+}
+class SMSNotification implements Notification {
+    public void notifyUser() { System.out.println("SMS notification sent"); }
+}
+
+class Device { 
+    private Notification notification;
+    public Device(Notification notification){
+        this.notification = notification;
+    }
+    public void setNotification(Notification notification){
+        this.notification = notification;
+    }
+    public void notify(){
+        notification.notifyUser();
+    }
+}
+
+// Usage
+public class StrategyDemo {
+    public static void main(String[] args) {
+       Device d = new Device(new EmailNotification());
+       d.notify();
+       d.setNotification(new SMSNotification());
+       d.notify();
+    }
+}
+
+
+-> Observer  Design pattern
+observers are subscribed to topic 
+
+interface Subscriber{
+    public notify();
+}
+
+class EmailSubscriber{
+    public notify(text){
+        //imp
+    }
+}
+
+class SMSSubscriber{
+    public notify(text){
+        //imp
+    }
+}
+
+public class channel{
+    List<Subscriber> subs;
+    private String text;
+
+    void addSubs(Subscriber s){
+        subs.add(s);
+    }
+
+    void provideText(String text){
+        this.text = text;
+        for(Subscriber sub: subs){
+            sub.notify(text);
+        }
+    }
+}
+
+-> Iterator Design Pattern
+
+different ways to iterate over a List
+
+interface Iterator{
+    boolean hasNext();
+    string next();
+}
+
+public class simpleIterator implements Iterator {
+    int index;
+    ArrayList<string> playList;
+
+    simpleIterator(ArrayList<string> songList){
+        index=0;
+        this.playList = songList;
+    }
+
+    public boolean hasNext(){
+        return index+1 < playList.size();
+    }
+
+    public string next(){
+        return playList[index++];
+    }
+}
+
+-> command design pattern
+
+if you have different comands to perform making a common interface would help to follow design principles
+
+interface command{
+    void execute();
+}
+
+class TurnOnCommand implements command {
+    public TV tv;// entity
+
+    public TurnOnCommand(TV tv){
+        this.tv = tv;
+    }
+
+    public void execute(){
+        //imp
+        tv.start()
+    }
+}
+
+class Remote{
+
+    public pressOn(Command onCommand){
+        cmd.execute(onCommand);
+    }
+    
+}
+
+-> Mediator design pattern 
+    if we follow the same analogy as subscriber pattern if the type of subscriber is same but the channel that we have start having diff mediators that have different 
+    implementations to provide text with a common mediator interface, similarly a more suitable example would be bidder and mediator ones.
+
+    class Bidder{
+        private AuctionMediator mediator;
+        void placeBid(Integer bid){
+            mediator.placeBid(this,bid);
+        }
+        string receiveBid(Integer bidAmount){
+            return "bid amount is"+bidAmount;
+        }
+    }
+
+    interface Mediator{
+        public void addBidder(Bidder bidder);
+        public void PlaceBid(Bidder bidder,Integer bid);
+    }
+
+    class AuctionMediator implement Mediator{
+        private List<Bidder> bidders = new ArrayList<>();
+
+        public void addBidder(Bidder bidder){
+            bidders.add(bidder);
+        }
+
+        public void placeBid(Bidder bidder,Integer bid){
+            for(Bidder b: bidders){
+                if(b != bidder){
+                    b.receiveBid(bid);
+                }
+            }
+        }
+
+    } 
+
+    class NewAuctionMediator extends AuctionMediator{
+        //add new functionality and use directly makes code modular
+    }
+
+-> state design pattern
+    when we have states and we want to keep the logic seperate for them and make the transition smooth
+
+    class stateContext {
+        public State current;
+        public stateContext(){
+            this.current = new redState();
+        }
+        public setState(State s){
+            this.current = s;
+        }
+        public nextState(){
+            return current.moveToNext(this);
+        }
+    }
+
+    interface State{
+        string getColor();
+        void moveToNext(stateContext context);
+    }
+
+    class redState implement State{
+        string color = "red";
+
+        string getColor(){
+            return this.color;
+        }
+        public moveToNext(stateContext context){
+            context.current = new greenState();
+        }
+    }
+
+-> template design pattern
+
+    just reduce the duplicate logic but having a template abstract class or interface.
+
+-> chain of responsibility
+    mostly similar to state design pattern it's just when condition is not saticefied next in chain is called
+
+    abstract class Approver{
+        protected Approver nextApprover;
+
+        setNextApprover(Approver next){
+            this.nextApprover = next;
+        }
+
+        public abstract void processLeaveRequest(int days);
+    }
+
+    class Manager extends Approver{
+        @override
+        public void processLeaveRequest(int days){
+            if(days<5){
+                //leave request approved
+            } else if(nextApprover!= null){
+                nextApprover.processLeaveRequest(days)
+            } else {
+                //reject
+            }
+        }
+    }
+
+-> visitor design Pattern
+
+    interface Patient{
+        public void accept(Visior patientVisitor);
+    }
+
+    public class childPatient implemen Patient{
+        public void accept(Visior patientVisitor){
+            patientVisitor.visit(this);
+        }
+    }
+
+    class Visitor{
+        public void visit(childPatient child){
+            //opt1
+        }
+        public void visit(adultPatient child){
+            //opt2
+        }
+    }
+
+-> momento(snapshot) design pattern - when we want to save last state, like when multiple people are working on common resource so modifiing that is not a good idea instead
+having a copy of it for every one is better.
+
+    class textEditor{
+        string text;
+        public void setText(string t){
+            text = t;
+        }
+
+        public void saveText(){
+            return new Momento(text);
+        }
+
+        public void restore(Momento m){
+            this.text = m.getText();
+        }
+    }
+
+    class TextManager{
+        public stack<Momento> history = new stack<>();
+        public void push(Momento m){
+            history.push(m);
+        }
+        public Momento pop(){
+            if(!history.empty()){
+                return history.pop();
+            }
+            return null;
+        }
+    }
+
+    public Momento {
+        private final string text;
+        public Momento(string text){
+            this.text = text;
+        }
+        public getText(){
+            return text;
+        }
+    }
+
+-> Structural design pattern
+
+-> Adapter Pattern
+Intent:
+Convert the interface of a class into another interface clients expect.
+👉 Used when you want to reuse existing code but interfaces don’t match.
+
+// Target
+interface Charger {
+    void charge();
+}
+
+// Adaptee (existing class)
+class OldCharger {
+    void plugIn() {
+        System.out.println("Charging using old charger");
+    }
+}
+
+// Adapter
+class ChargerAdapter implements Charger {
+    private OldCharger oldCharger;
+
+    ChargerAdapter(OldCharger oldCharger) {
+        this.oldCharger = oldCharger;
+    }
+
+    public void charge() {
+        oldCharger.plugIn();
+    }
+}
+
+// Client
+public class AdapterDemo {
+    public static void main(String[] args) {
+        Charger charger = new ChargerAdapter(new OldCharger());
+        charger.charge();
+    }
+}
+
+
+-> Composite Pattern
+Treat individual objects and compositions of objects uniformly.
+👉 Common in tree structures (files, menus, UI components).
+
+interface FileComponent {
+    void show();
+}
+
+// Leaf
+class File implements FileComponent {
+    private String name;
+
+    File(String name) {
+        this.name = name;
+    }
+
+    public void show() {
+        System.out.println("File: " + name);
+    }
+}
+
+// Composite
+class Directory implements FileComponent {
+    private String name;
+    private List<FileComponent> children = new ArrayList<>();
+
+    Directory(String name) {
+        this.name = name;
+    }
+
+    void add(FileComponent component) {
+        children.add(component);
+    }
+
+    public void show() {
+        System.out.println("Directory: " + name);
+        for (FileComponent c : children) {
+            c.show();
+        }
+    }
+}
+
+
+-> Facade Pattern
+Provide a simple interface to a complex subsystem.
+👉 Very common in service layers, APIs, libraries.
+
+class DVDPlayer {
+    void on() { System.out.println("DVD ON"); }
+}
+
+class SoundSystem {
+    void setVolume() { System.out.println("Sound set"); }
+}
+
+class Projector {
+    void on() { System.out.println("Projector ON"); }
+}
+
+// Facade
+class HomeTheaterFacade {
+    private DVDPlayer dvd = new DVDPlayer();
+    private SoundSystem sound = new SoundSystem();
+    private Projector projector = new Projector();
+
+    void watchMovie() {
+        dvd.on();
+        sound.setVolume();
+        projector.on();
+        System.out.println("Movie started");
+    }
+}
+
+
+-> Decorator Pattern
+Add behavior to an object dynamically without modifying its class.
+👉 Alternative to subclass explosion.
+
+interface Coffee {
+    int cost();
+}
+
+// Base object
+class SimpleCoffee implements Coffee {
+    public int cost() {
+        return 100;
+    }
+}
+
+// Decorator
+abstract class CoffeeDecorator implements Coffee {
+    protected Coffee coffee;
+
+    CoffeeDecorator(Coffee coffee) {
+        this.coffee = coffee;
+    }
+}
+
+// Concrete decorator
+class MilkDecorator extends CoffeeDecorator {
+    MilkDecorator(Coffee coffee) {
+        super(coffee);
+    }
+
+    public int cost() {
+        return coffee.cost() + 20;
+    }
+}
+
+
+-> Bridge Pattern
+Decouple abstraction from implementation so both can vary independently.
+👉 Prevents class explosion.
+
+// Implementor
+interface Device {
+    void turnOn();
+}
+
+class TV implements Device {
+    public void turnOn() {
+        System.out.println("TV ON");
+    }
+}
+
+// Abstraction
+abstract class Remote {
+    protected Device device;
+
+    Remote(Device device) {
+        this.device = device;
+    }
+
+    abstract void power();
+}
+
+// Refined abstraction
+class BasicRemote extends Remote {
+    BasicRemote(Device device) {
+        super(device);
+    }
+
+    void power() {
+        device.turnOn();
+    }
+}
+
+
+-> Proxy Pattern
+
+Provide a placeholder or wrapper to control access to another object.
+👉 Used for security, lazy loading, logging.
+
+interface Image {
+    void display();
+}
+
+class RealImage implements Image {
+    private String file;
+
+    RealImage(String file) {
+        this.file = file;
+        load();
+    }
+
+    private void load() {
+        System.out.println("Loading " + file);
+    }
+
+    public void display() {
+        System.out.println("Displaying " + file);
+    }
+}
+
+// Proxy
+class ImageProxy implements Image {
+    private RealImage realImage;
+    private String file;
+
+    ImageProxy(String file) {
+        this.file = file;
+    }
+
+    public void display() {
+        if (realImage == null) {
+            realImage = new RealImage(file);
+        }
+        realImage.display();
+    }
+}
+
+-> Flyweight Pattern
+
+Reduce memory by sharing common immutable state.
+👉 Useful when you have lots of similar objects.
+
+class CharacterFlyweight {
+    private final char symbol;
+
+    CharacterFlyweight(char symbol) {
+        this.symbol = symbol;
+    }
+
+    void display() {
+        System.out.print(symbol);
+    }
+}
+
+// Factory
+class CharacterFactory {
+    private static final Map<Character, CharacterFlyweight> cache = new HashMap<>();
+
+    static CharacterFlyweight get(char c) {
+        return cache.computeIfAbsent(c, CharacterFlyweight::new);
+    }
+}
