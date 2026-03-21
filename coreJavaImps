@@ -1,0 +1,62 @@
+Multiple Inheritance
+-> not allowed in java because if same field name is passed from both parent that would cause ambiguity.
+-> with help of Interfaces we can achieve Multiple Inheritance.
+
+Access types for class
+-> classes can have only two types: public, default
+-> default are Package Private
+
+Access Types
+-> By default fields in class are package private 
+-> Private only accesable in class
+-> Public accesable anywhere
+-> protected can be accesable anywhere by child classes or in same package
+-> package Private only accesable in package
+
+Constructor
+-> Private constructor 
+    -> when we want to have a singleton class so we want to restrict object creation.
+    -> when we want to create a Utility Type of class everything static.
+    -> For Enums constructors are private because objects are fixed constant no more are intended.
+-> protected
+    -> In abstract classes -> constructor should be protected because its object can't be created so only child class that extend this will call this,
+     when creating child class object base class constructor will be called where protected is enough no need of public.
+
+Final(constant)
+-> Variable: can not be changed
+-> Methods: can not be overidden
+-> class: can not be extended
+-> constructor: not allowed because constructor can't be modified or inherited by default so no need
+
+Interfaces
+-> Methods: By default are public
+    -> abstract: when we don't specify anything method will be of this type
+    -> static: it belongs to interface not implementing class so can only be called by interface name.
+    -> default: They have implementation and belongs to implementation class
+        => usecase: when there are alot of classes implementing a interface and you want to add a method then it is tedious task to add it's implementation in all the classes.
+-> variables: By default are public static Final
+    -> Recommended to be called with Interface not implementing class because it belongs to interface
+
+Diff B/W Interface and abstaract class
+-> abstract class have instance varibles for there initialization it have constructor, Interfaces don't have constructor
+-> we can implement multiple interfaces for a class, but it is not possible for abstract class.
+
+Inner class
+-> Member Inner class:
+    -> when the classes are related we can have a inner class that will act as member of the outer class and can access the other members, this can save the pain of creating 
+    another class and having a referance of outer class to establish relation.
+    -> it belongs to the outer class instance
+    -> it's object will not be created automatically but needed to be created in out constructor or by using outer instance.
+-> static inner class:
+    -> It belongs to the outer class rather than it's instance
+    -> generally used for grouping related classes together
+-> anonymous inner class
+    -> when we want to create instance of implementation class of a interface/abstactClass without creating implementation class.
+    -> for one time use purpose.
+-> Local Inner class
+    -> It is created inside method of a outer class
+    -> It is tightly coupled with that method as we don't want to use it anywhere else.
+    -> It can use other members of inclosing object. 
+
+Generics(medium link)
+https://engineeringdigest.medium.com/generics-b158a743d18f
