@@ -1,0 +1,232 @@
+commands helper
+brew service start postgresql@15
+
+
+
+Online/offline indicator
+
+-> Can have a DB That have userId and isOnline field
+-> userID -> isOnline [key -> value] access pattern, DB’s like redis ,DynamoDB can be used
+-> Can have a batch API to get status of multiple users
+-> How the writes would happen as user comes marks it as online and as he goes post request comes to mark as offline but there could be 
+   unexpected drop-offs where there is power failures at users end so better is that from user we get heartbeats after a certain interval 
+-> so in DB better is we can have userId-> lastHearbeatTime
+-> those having lastheartbeat time < current - interval would be considered offline
+-> or we can have ttl for 30s[interval] on heartbeat so who so ever userId is not in list is expired
+-> for hearbeat write on scale there is a lot of writes for this we can use Connection pooling
+-> As the service starts establish some persistant connection[raw on TCP] with database that would prevent establishing a tcp connection creation/removal for just a field update in DB
+-> suppose there are 10 service instances and db concurrent connections supported are 100 now we set some minimum connection according to which as soon as instance 
+   starts will establish connection and as per the no of requests received connections are made and added to connection pool as soon as max limit reached no new connection
+   is made it will wait for previous connection to get free for a particular instance and suppose a connection is not used from a lot of time so it will expire and when needed
+   a new connection can be created again by may be for some different instance or same one.or explore other ways to do connection pooling also.
+
+SO in this system bottleneck for scale is number of connections not the storage
+
+Connection pooling
+-> maximumPoolSize per server
+maximum connection one instance can have at a time with DB
+suppose DB supports 100 connection general rule is 0.6*{maxconnection}/numberOfservers
+
+-> minimumIdle
+minimum no. of connections per instance created at the time of initialisation
+generally 20% of max number of connections
+
+-> connectionTimeOut
+time for which a request waits for a connection and gives exception if pool is exhausted
+2000ms - for low latency system
+5sec - for batch jobs
+
+-> maxLifeTime
+Max life of a connection before it is recycled.
+generally 30 min
+
+-> idleTimeout
+remove the connections from pool that are idle but maintain minimuIdle
+Spiky traffic → keep higher (1–5 min)
+Stable traffic → keep lower (30–60 sec)
+
+So as soon as service starts minimum connections are established as per requests more connections are added to the pool with limit maximum pool size and on connection timeout request
+throw Error applying backpressure, maxLifeTime recycle the connections before DB server timeout and the connections that are idle for a while are removed as per idleTimeout config.
+
+Best library - HikariCP 
+
+
+
+Database insights
+-> suppose we are building a blog app
+-> now it would have
+users
+-> id
+-> name
+-> bio
+blogs
+-> id
+-> is_deleted: for soft deletes so that we can have it recoverable and also performace inc. as Btree node in database don't have to rebalance which happens on delete.
+-> author_id
+-> published_at: for redabilty store in string as date: time but, it is not space efficient + if we query for some comparision it is not efficient as we have to convert it into 
+   date,month year and time than compare, db's have some format dateTime in that we can also store but could be inefficient in some ways
+   [every db has it's own implementation but all provide this datatype], we can store in epoch but it would reduce redability, best is we can store int as yyyymmdd 
+   this way we can compare + space efficient.
+-> title
+-> body: this we would have as LONG_TEXT not VARCHAR as in long text referance of the field would be stored in column not the field value, it have 2 disc reads one to get row then 
+    one to get column[body] value which is compute intensive but it is good as suppose in this case we just want list of blogs then in that we just get these rows from which 
+    we can read author and published_at no need for body once user clicks on a particular item from list then we get that row only with it's body.
+
+caching
+Anything that saves discIO, networkIO and computation is a cache
+question: should we compress cache and is there any cache that provides compression on storage and decompression while returning
+ans: yes we can have cache with compression but out of the box cache should not provide that as we save on storage while compressing data but while passing decompressed data
+we are making a bad networkIO opp so better is we should keep the decompression logic at client end.
+
+
+question:
+if we store cache on disk[db] or on redis how to decide
+suppose we have persistant connection so network IO is nullified
+redis(would store in ram)
+-> just key value we can get instantly
+-> for small reads redis would be way faster as time spent on read is very small when reads are big there is little diff only.
+in DB
+-> have to traverse a tree to get to particular row and giv result (logN)
+-> we can store huge data in it
+
+TODO:
+for this we can read more about redis and DynamoDB
+read how sql stores data internally
+5 possible ways that you can cache with a example
+
+cache
+-> on application server RAM : suppose if we have a nearly static data where inconsistancy doesn't matter or request from a user can only reach a application server via some
+load balancer or routing technique so this will be effective
+: it will have limited space and if server goes down it will be removed
+-> material views: where data are joined or some new column is added with some precompute if most of the queries are onto this type of data we can make a view of it
+: challenges that comes with it is triggering update of views on db update mostly used with not so much changing data
+-> browser
+-> CDN
+-> Disk of API server: it is having OS and some packages ram is there that we have chached on in 1st point but it is limited  but disk is majorly unused we can utilize that
+if some inconsistency is fine
+-> load balancers 
+-> centalized remote cache: redis provides consistency
+
+scaling
+vertical scaling is possible upto a extent then horizontal scaling comes into picture
+we can have more API servers but for them to support we have to scale upstream that is DB servers.
+
+majorly load is read load so we can add read repicas
+if write load is there then we can do sharding.
+
+deligation
+whatever is needs to be done in real time only do that rest deligate.
+
+cuncurrency - message queues, message streams
+
+comunication - 
+-> short polling: when client polls the server for status
+-> long polling: when client calls but server sends the response once job is completed. then client again calls that just reduce no. of calls
+rest specifications, http requests
+websockets- socket.IO
+server sent events - which are persistant unidirectional events like stock APP (implementation on MDN)
+
+
+
+
+Relational databases
+
+-> passimistic locking : insure consistency in case of concurrent transactions
+deadlocks: generally databases try to avoid deadlocks by running a deadlock detection algorithm before any transaction could accuire lock [to avoid lock transaction kills itself]
+
+shared lock 
+Select * from ... for shared
+-> other transactions can have shared lock on same rows
+T1 -> row 1,2,3: read and modify but for modify it has to be converted to exclusive lock for that all other threads have to release there shared lock
+T2 -> row 3,4,5 : read
+read throuput increases.
+
+exclusive
+Select * from ... for Update
+untill T1 is complete T2 can't even read.
+
+skip lock
+it's just a extension
+Select * from ... for Update skip locked
+it will skip all those rows that are already locked by some other thread but get lock on rest
+
+NOWAIT
+Select * from ... for Update NOWAIT
+if any row is already locked kill self transaction
+
+So if we have isolation levels in ACID then why this locking is needed as those isolation level are on transactional level which imapact scheduling of transaction like serializable
+would not allow other transaction to run[in this case extra locking is not needed] which most of system won't have because of high throughput needs other repeatble read, read commit
+read uncommit these don't block tranactions to access same row so they have edgecases which could leed to wrong/stale reads in tranctions which is fine with ACID as we chose that
+that isolation level it is Consistent at db level but from application perspective we have got wrong data that's why this locking mechanism is important.
+
+
+suppose if a query is fired for concurrect transactions[120] which looks for first row[120 ] column c1 that is null and update that to some value what will happen
+all the threads would get 1 row see it as null and update that but few threads that are scheduled late will might see 1 row as non-null and update second
+
+suppose if we employ exclusive lock here in query
+now all try for 1st row one thread would get it other go into some wait state[means in wait queue] then once commit happen all the other thread are signaled to re-execute the query 
+again then all the rows would be filled sequencially but by any thread who so ever got lock. it will cause n*(n+1)/2 operations in db
+
+if we add skip lock
+we would see significant time difference, all the rows would get filled, but if some transaction fail and others moved ahead of that row due to skip it will be unfilled, as there
+is no waiting in queue, query would be completed for rest transactions. it would just cause n operations as db would do one disk read means read a node in b tree then that contains 
+some rows it will lock 1 for 1 transaction and give other row to another so no extra opp required for other transaction.
+
+what ever we use out of these is the gauranty that our db provide, relational db has given us all the posibilities 
+
+so rule of thumb is fixed inventry[rows]+fixed contention[threads trying for writes]= use locking
+
+If we have tried with shared lock
+all threads accuired shared lock all waiting on each other to convert to exclusive to write...Deadlock!!
+
+setup
+autocommit off: as moajorly db keeps transaction as isolated so if transactionStart[select statement with lock] gets commited it would cause lock release, but we want to update and
+release because then other transactions can see value in that field and move ahead. in realworld also the query that is rapped inside Transation db's generally
+set the commit to off for the time of execution.
+
+transactions starts
+
+do some work so add some sleep: in real world the transactions take some time to compute as this is small transaction so even if we apply locking or not it will have same effective
+if we don't add sleep as the second transaction comes would have already completed so we can't able to see the lock effect that we generally see in real world.
+
+transaction commit
+
+1:26
+
+Key value store from relational database
+thinking on optimal ways and query's for them
+primary key
+datatype of cols
+want to have expire -indexing what 
+delete opp- soft delete utilizing expiry cols set -1 in expiry[micro optimisation delete only if not expired]
+put- using upsert[doing it at db layer] + saving get at application layer
+get -  always with expire condition[Select * from store where key =k1 and ttl > now()][this always saves networkIO but to save on disk IO when index is on[key,ttl] 
+else whole table is read which doesn't save disk IO]
+TTL- what query is optimal [to check expiry at db layer]
+
+then delete in batches to have minimum rebalancing
+2:06
+
+Delete approach
+for disk: we can run a periodic job to delete all the expired keys
+
+only for in memory database[redis]
+As the delete can be pointed no need to rebalance the Btree just freeing up the memory, so what we can do is whenever some key is accessed that is expired delete that key[lazy deletion].
+this does 90% of job rest 10% is done by periodic job, but this is not that complete deletion job as redis is single threaded[don't have alot of time] it employs a algorithm
+gets only random set of 20 keys finds the expired and delete them if they are more than 25% rerun the deletion else just leaves this is fast + solves the problem for memory.
+
+
+Architechure
+LB-> KV pair API server -> db[sharded with replicas]
+try to implement from kv server to sharded db with connection pooling
+try to spin up kafka and rabbit mq and read messages for them
+learning
+-> Replication in PostgreSQL is primarily log-based. The primary writes changes to WAL, which is streamed to replicas. Replicas apply those logs to stay in sync.
+Depending on configuration, replication can be synchronous or asynchronous, trading off between consistency and latency.
+
+steps 
+replica establishes a connection with primary and tells I have logs untill this point send afterwards
+Your Java app sends a POST request to insert "apple".
+The Primary database writes "apple" to its own local disk.
+The Primary database immediately replies to your Java app with a "Success" message.
+A fraction of a second later, the Primary drops that unread log data onto the streaming connection, sending it to the Replica.
