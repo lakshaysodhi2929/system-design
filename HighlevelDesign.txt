@@ -2,7 +2,6 @@ commands helper
 brew service start postgresql@15
 
 
-
 Online/offline indicator
 
 -> Can have a DB That have userId and isOnline field
@@ -65,7 +64,7 @@ blogs
 -> author_id
 -> published_at: for redabilty store in string as date: time but, it is not space efficient + if we query for some comparision it is not efficient as we have to convert it into 
    date,month year and time than compare, db's have some format dateTime in that we can also store but could be inefficient in some ways
-   [every db has it's own implementation but all provide this datatype], we can store in epoch but it would reduce redability, best is we can store int as yyyymmdd 
+   [every db has it's own implementation but all provide this dateTime], we can store in epoch but it would reduce redability, best is we can store int as yyyymmdd 
    this way we can compare + space efficient.
 -> title
 -> body: this we would have as LONG_TEXT not VARCHAR as in long text referance of the field would be stored in column not the field value, it have 2 disc reads one to get row then 
@@ -181,7 +180,7 @@ all threads accuired shared lock all waiting on each other to convert to exclusi
 
 setup
 autocommit off: as moajorly db keeps transaction as isolated so if transactionStart[select statement with lock] gets commited it would cause lock release, but we want to update and
-release because then other transactions can see value in that field and move ahead. in realworld also the query that is rapped inside Transation db's generally
+release because then other transactions can see value in that field and move ahead. in realworld also the query that is wrapped inside Transation db's generally
 set the commit to off for the time of execution.
 
 transactions starts
@@ -230,3 +229,326 @@ Your Java app sends a POST request to insert "apple".
 The Primary database writes "apple" to its own local disk.
 The Primary database immediately replies to your Java app with a "Success" message.
 A fraction of a second later, the Primary drops that unread log data onto the streaming connection, sending it to the Replica.
+
+
+Non Relational databases
+Document databases:
+-> like mongodb, elasticsearch
+-> closest to relational
+-> json based
+-> supports complex queries like in json get all the documents having this value for this key
+-> but can't partitian more if having such queries as these queries are cross shrad and would cause a lot of time
+-> cross shard means for a same request we need to look into 2 shards or 2 db servers
+-> more partiatian provides more throughput
+
+key value 
+-> redis, Aerospike, DynamoDB
+-> key wise access pattern restrict cross shard queries 
+-> can be heavily partitianed
+
+column oriented databases
+-> like relational one are row oriented column oriented we can visualize as all the different columns are stored in diff files majorly fit in analitics usecase like avg for particular
+column. majorly datawarehouses use them[where we store full data log like whole history]
+-> insertion would be heavy
+-> columns are homogeneous data so can be compressed heavly so provide good space optimisation
+paper: c-store a column oriented database
+
+Graph database
+-> neo4j,neptune, Dgraph
+like it stores data in adgecency list
+-> when we want to use graph algorithms
+-> like fraud detection[1 transation not like you usual one], recommendation system[if you lie in a cohort you would be recommended]
+-> like linkedin 1st, 2nd connection
+
+
+relational 
+when we want strong consistency, foreign key and all, fixed schema we go for relational
+non-relational 
+when we no constraints that relational provides we go for non relational which we can leaverage for sharding the data 
+
+why sharding is a bit risky in realtional sometimes[pointing out just one case]{this is for db level sharding}
+{In sharding we can choose which table to shard or not generally smaller tables are kept in all the shards, or sometimes tables that are joined frequently are sharded with same 
+key, while marjorly we don't shard on diff keys but can be a usecase then we need to do some things to avoid cross shard join discussed down a case}
+-> case suppose we have 2 tables in our db both are sharded suppose one has key of other which is foreign to table A and primary to table B
+-> if sharded on same key then there data would be present in same shard so contraints of foreign key would be check that table B should have row for that key before adding to tableA
+-> if sharded on diff keys then to check foreign key constaints cross shard network IO will happen which cause latency
+-> what we can do: 
+   -> enforce integrity at application layer and drop foreign key contraint
+   -> denormalization: add colums in table A that you want to use from B via foreign key and drop containt
+   -> async validation drop containt
+
+{if we do application level sharding then the referential integrity should also be taken care at application layer}
+
+1:00
+
+slack design
+DB schema
+users: id, name
+channels: id, org, name,type[dm/grp/channel]
+membership: userId,channelId, readUpto <- this membership we can use to have all user and channel specific relation
+messages: from, channelId, createdAt, msg
+
+As there would be a lot of messages so sharded db is required we can go with casandra or shard sql database by ourselves
+
+for even 2 person we can have channel on UI it will be rendered like DM but on backend it is channel as this design is scalable otherwise for message we have to have channelId or 
+userId of the receiver and if message is for channel then that receiverId would be null and if for receiver than channelId would be null and for retrival we need to write a logic
+that which type of message is it than have to retrieve it so better we have all type of conversations as channels only.
+
+HLD
+with different gurantees we can have a lot of possible designs 
+Approach 1
+users have a websocket connection[majorly for receiving messages]
+user1 [sends message in channel] -> LB -> API servers -> Db
+API server(after persisting the message)-> Websocket server -> forwards to other connected users
+gurantee: message persistance as in slack type system it is a good thing to have
+why we are not just doing this on WB server as it is a security problem If we directly make connection with wb and db, and also if we put some heavy logic on wb,
+if it goes down whole realtime communication can go down as for normal API servers users are not connected to them but WB have users connected to them.
+
+Approach 2 
+users have websocket connection for both sending and receiving messages
+user1 [sends message in channel]-> websocket -> publishes in queue for async injection into DB
+websocket -> sends to other receiving users
+gurantee: message persistance + low letency [both mid]
+this is for whatsapp like system as persistance at backend can wait as user mobile device persistance is already present
+
+Approach 3
+users have websocket connection for both sending and receiving messages
+user1 [sends message in channel]-> websocket -> sends to other receiving users
+gurantee: low latency
+for zoom chat like system where persistance is not important
+
+websocket imps
+one thing to remember is for chrome per domain there is 6 TCP connections allowed so we can't have these persistant websocket connections for everything because suppose for our chat
+system we had one then for some images getting we had another etc. then for doing other opps like click of a button trigger something would be blocked so usually we have 1 websocket
+connection we do all the receiving work through that only.
+
+websocket scale
+suppose websocket server have limit 4 connections 
+if we implement websocket using socketIO -> websocket know who all is connected to it like user A,B,C,D
+and as they connect they pass on membership info to websocket that it stores in some cache or in disk
+like A is part of -> channel c1,c2,c3
+now when A forwards message it gets deliverd to all users subscribed to these channels 
+but like websocket have 4 connection so other subscribers of channel1 would be on other websocket server so how would they receive, for that websocket 1 should be connected to
+other websocket servers like star topology but then most of the connections of websocket is exhausted by connecting with each other which is bad 
+
+scale: all the websocket connected to a realtime pub/sub like redis so connections would drop to 1 and realtime pub/sub doesn't provide any persistance it won't store message
+it will send it to wb server subscribed to it at the moment,
+like suppose A user is subscribed to slack channel 1 when it connects to websocket server, web socket server which is connected to pubsub passes info that it is subscribed to channel
+which is correspionding to channel 1 of slack actually redis also has channels internally now like this whicherver server is connected to channel 1 over pubsub can exchange messages
+pubsub would directly pushes the messages to them which are subscribed to that particular channel. 
+
+so generally websocket server can handle a lot of connections so who all are subscribed to a particular channel are generally on same websocket but sometimes when there is a 
+rebalancing or websocket server crash the clients connects to different servers then this pubsub is used for exchanging messages.
+
+Security
+untill now we have exposed websocket server over the internet but that can invite ddos attack but we can have ratelimiter and insure safety practices[as we are not directly 
+calling db also] if we want to have it as realtime, but if we can afford some latency we can put it behind load balancer and infact we are getting membership info from client
+instead we can have it directly from db or through some API call.
+
+Distributed systems
+
+It is all about scalling system horizontally
+
+Load balancer
+By round robin:
+if the request are homogeneous[means will take about same time to execute] and infra is also homogeneous[means having equal hardware capacity]
+simply distributing load via round robin is good.
+
+By weighted round robin:
+if suppose 1 API server is having more ram than others then it should be requested more
+
+Least connections 
+pick the server that is having least active connections.[good for hetrogenous request]
+
+implemenation wise
+just have a strategy of balancing load
+according to it find the target server build a connection with it
+then map request connection with that target connection and pass the incoming and outgoing message.
+
+simple imlementation
+Now as we have more than 1 backend servers load balancer will have a config containing
+-> mapping: source and target connection
+-> load balancing strategy
+-> health check for targets
+
+//orchestrator is multiple nodes running on standby with leader election if master goes down 
+now there is a orchestrator layer in betweeen that checks health of backend servers and updates in Db because direct passing it to lb would create a different problem
+as lb can be more than 1 and they might go down and new one need that info so DB would be appropriate to have this info.
+DB would have
+-> load balancing strategy
+-> health check for targets
+
+if LB would look this before every request it would add latency
+
+now either Lb have to poll db for health checks so that requests are not forwarded to not active servers or this info is pushed to LB
+polling
+-> this happens in interval suppose if server goes down just after a poll is finished it would cause the issue that we are trying to solve.
+
+pushing
+one way to push is orchestrator updates DB and ask LB to pull data but if there are different LB's it has to be done for all, still that is fine.
+other way could be as we want to push the data to multiple servers -> after orchestrator updates DB and either orchestrator pushes new data in realtime pub/sub[redis] or DB through CDC pass this 
+info to pub/sub that would go to LBes.
+
+now how would we know that we want to scale LBes or even the backend servers we would have a telemetry agent running in VM's that would pass metrics to a DB[prometheus] that 
+metrics orchestrator or autoscaler can analyse and scale instances, here scaling for backend servers would be handled as orchestrator would know through metrics orchestrator or autoscaler
+and puts that backend server in db,
+but if LB gets added and there are multiple LB's to whome the request goes from client because client knows 1 IP to connect to,
+if we have a load balancer on it that would even make the communication complex + adds latency due to another network hop
+
+now DNS comes into picture those LB's have some IP's DNS has mapping of those IP's with the domains
+if public DNS
+google.com -> IP1,IP2,IP3
+
+private DNS -> DNS core
+my-service -> IP1,IP2,IP3
+
+as the request comes first Domain name is resolved picking some LB IP with some balancing technique than passing the request to particular LB.
+
+Remote locking
+
+at the time of airline ticket booking system thread take locks at db level.
+at process level suppose I ran same process from 2 windows it might say one is already running and exit there DISK level locking there
+
+at machine level remote locks are the solution
+
+lets take a example suppose there is a remote queue it just pops out a message on requesting and we can't change any impl of its because it is remote
+now we have consumer but we want only one consumer to get message at a time, So to solve this we have to implements remote locks.
+
+we have a DB that contains
+Resource[on which lock is required]: C1[consumer that acquired the lock]
+
+now before consumer gets a message from queue it has to acquire the lock means set value C1 into DB where it will be competing with other consumers.
+now from DB we want key value based access paterrn
+with automatic expiry and atomic opperation
+Redis fits in well
+
+so for a consumer
+acquire lock 
+: redis acquire
+  if aquired return
+  else continue checking
+read message 
+release lock
+: check lock aquired by
+  if your's release
+
+while release one things that need to be checked is if the lock is taken by the consumer that is releasing because suppose at the time while reading if lock expired and 
+some other thread took that then we are releasing someone else lock
+
+to solve this generally EVAL is used in redis that runs LUA script which made these conditions as one statement.
+
+Distributed locking: RedLocks[redis locks]
+but here with only one redis instance it could be single point of failure so better is if we have multiple redis instance and lock is tried to be accuired on all if lock is
+acquired on atleast 50% of instances it can continue to read else release of acquired one as well this insures fault tollerance and availability.
+
+Distributed Id generators
+
+Ids are important as they uniquely identify a entity.
+
+for a single machine it is easy like we can take epoch time or a global counter
+
+for more than 1 machine <machine-code>-globalcounter/epoch
+
+but if we keep global counter and machine reboots it would again set the counter to 0
+
+so we can store that in some disk
+
+count = fetch()<-- from disk
+giveId(){
+   count++
+   store count
+   return <machine-code>_count
+}
+
+but it involve a lot of disk IO
+
+we can significantly reduce that
+
+count = fetch()+1000+1<-- from disk
+store count
+giveId(){
+   count++
+   if(count%1000 == 0){
+      store count
+   }
+   return <machine-code>_count
+}
+
+here we are not utilizing each int but system is correct 
+
+if we want to make it more optimize in terms of latency we can use epoch miliseconds that won't require db call at all
+
+there could be a use case where we want monotonically inc id's across machines so that we can identify which write is latest and overwride the other
+patter count be <epoch>_<machine-code> --> 1709923001
+-> but as clock can't always be in sync due to heat and cold condition viberation in the physical clock of the machine can change effecting the time, so it may be in 4 machines
+on same instant we get diff epoch, and when the time sync the clock that moved fast delibrately gets slow,
+so if we want correctness we might have to follow that counter approach that has a bit of latency
+-> on same milisecond a machine could generate 2 id's that would be same
+
+As if we have a central service here that provides the id based on epoch due to load we might have a cluster of machines in this service that continuously have to check wheather
+the id generated is greater than anyother machine at this instant which is messy.
+
+Use case supose we have multimaster DB we can't let it count by auto increment id otherwise there would be alot of conflicts so we have to provide custom logic for id's to it 
+according to our alignments.
+
+
+random uuid based approach
+uuids are 16 bytes long now generally these Id's are indexed means suppose a new mapping table is created with this id and index as column than in ram it is loaded opp are performed
+like join and all then finally rows are readed from the main table.
+so the main part is it get's loaded to ram so we should make it size efficient to eaisly fit in ram, mongo db have epoch_random_counter, 4,5,3 bytes total of 12 bytes
+
+
+Amazon design [not needing monotonically inc time]
+DB
+service.  counter
+order.     500 -> 1000
+payments.  2000
+DB -> Id generation service -> different services as clients
+
+suppose order service have 5 instances one of it gets request for some id's to be provided to orders now Id generation service passes a batch of ids like 0 to 500 now when
+another instance ask it provides 501 to 1000 when instance see it is running out of id's it requests and Id generation service gets it from db by having that locking and all on row
+there is no collisions at all as every request is getting its own batch
+downside is if client crash that batch is lost so have to finetune it in a way that batch request is not that large and loosing a batch won't impact much
+
+How flicker does it
+they need id generation service as they have sharded db and uuid don't scale
+
+Id generation DB<- service -> DB
+ there Id generation service is a DB 
+
+DB
+id[primary key]    val[unique]
+count              a
+
+which inserts a row with some dummy value every time so that unique key constraint fails unique id is formed that they just get
+
+insert into table (val) VALUES ('a') ON duplicate KEY update id = id+1;
+
+but as load could be more may be we need more Id generation DB to avoid single point of failure
+
+now we can have odd values to be generated from db1 and even from db 2
+we can have autoincrement to be 2 instead of 1, even if one goes down other one will provide even ids untill it recovers and once it gets back it can start from where it left or we 
+can have a reset of value if we want
+
+How twitter does it 
+SNOWFLAKE
+epoch[41]_machine-code[10]_counter[12]
+constraints
+so at max 1024 machine and 4096 request per milisecond it can provide unique Ids
+
+these is far more superior as it doesn't require any infra or calls to db just internal liberary + can work with sharded database
+and as these are roughfly sorted values byproduct is it helps while iteration of db usecase pagination
+
+general pagination offset = x ,limit y -> offset = 2*x ,limit y
+
+now in this DB will compute the result for 2*x and then eliminate 2*x-y it will load all the rows then eliminate y as this is made for complex query with where clause
+but that query if we don't want 
+with snowflake we can just 
+find()+ limit(y) -> gives result we store last value(x)
+find(x) + limit(y)-> O(n) +y always almost constant
+
+2:00:00
+
+
+
+
