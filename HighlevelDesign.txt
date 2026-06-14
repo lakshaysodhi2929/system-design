@@ -483,10 +483,10 @@ patter count be <epoch>_<machine-code> --> 1709923001
 -> but as clock can't always be in sync due to heat and cold condition viberation in the physical clock of the machine can change effecting the time, so it may be in 4 machines
 on same instant we get diff epoch, and when the time sync the clock that moved fast delibrately gets slow,
 so if we want correctness we might have to follow that counter approach that has a bit of latency
--> on same milisecond a machine could generate 2 id's that would be same
+-> on same milisecond a machine could generate 2 id's that would be same if it processed request in microsecond
 
 As if we have a central service here that provides the id based on epoch due to load we might have a cluster of machines in this service that continuously have to check wheather
-the id generated is greater than anyother machine at this instant which is messy.
+the id generated is greater than any other machine at this instant which is messy.
 
 Use case supose we have multimaster DB we can't let it count by auto increment id otherwise there would be alot of conflicts so we have to provide custom logic for id's to it 
 according to our alignments.
@@ -547,8 +547,87 @@ with snowflake we can just
 find()+ limit(y) -> gives result we store last value(x)
 find(x) + limit(y)-> O(n) +y always almost constant
 
+so if we want last 0-100 tweets in last 5 mins we can then 100-200 we can get that with low latency and these were roughly sorted also like in the order they were twitted
+
 2:00:00
 
+instagram ofloads this logic of snowflake creation at service layer to DB by writing some sequencer for autoincrements so increments happens automatically with id as snowflake
+this makes them more scalable as now they can have more than 2^10 machines 
+there snowflake epoch[41]_db_shard_id[13]_shard_sequence_no[10]
 
+so now they are limit by DB server having  2^13 some 8000 shards, but that is infact very large.
+
+
+CDN
+so cdn sits silently b/w backend server and user and provide benefits like serving cached content directly without contacting backend server suppose we have frontimage in our
+site that we want to render that could be of 10mb of static data why we want to load our servers to provide that so we can configure CDN for this
+so we have our LB domain like MYlb.co.in we configure it to cdn and cdn provides a url like MYlbCDN.co.in 
+Now from our backend we provide image url as MYlbCDN.co.in/static/abc.png to out frontend when frontend renders so MYlbCDN.co.in -> resolves to cdn ip by dns where if its a 
+first call request goes to our LB and cached else response is directly passed through cache, cdn provides a API to invalidate cache if we pushed a change and want to provide 
+it to our users before ttl invalidates cache.
+
+FYI: presigned URL and cdn url both have some ttl to upload and fetch
+
+How image is uploaded
+now simple way is user upload it to backend server from there it gets uploaded to S3 so suppose image is of 5mb so there are 2 network hops which increase the cost and letancy
+why can't user directly push to s3 with security means as obviously we can open our S3 for public uploads
+
+so this is done through presigned url
+here as user shows intent to upload image meta data along with our s3 bucket and some randome imageId is passed to s3 via BE server[imageupload service] and a presigned url 
+from our s3 bucket is fetched then frontend puts that image on that url which then generally provides CDN url that is mapped to s3 as origin as cdn has integration with 
+s3[with auth that we provide] to view the image we can't call the s3 path directly but with that cdn path we can call that internally fetch/cache the image and provides it.
+
+if user want to post that image say on insta on clicking button we want to add that entry in our posts db
+now what we have achived is wheather it is image upload service or reels upload service post service remains same
+
+and for extensebility we can publish a kafka event that a new post is published that can be consumed by various consumers[analytics,feed etc.]
+Posts schema
+userId
+caption
+imageID// don't store the direct cdn path beacause that is derivable
+derived path -> <cdn>/static/{userid}/{imageid}.png
+suppose we want to change cdn then it's better if we have stored this way otherwise it's not possible or require huge mannul effort to convert all cdn urls
+
+CDN as main usecase is image/video: it out of the box it provides image processing, resizeing like frontend knows user device size so in cdn url it adds query param it passes
+the resized image and even caches that too.
+
+1:50
+Hashtag service
+so once the user does that above post and post service publish that event to kafka with partitian key of userId because we want for a particular user events goes to same partitian
+so that they are in order
+
+what we want?
+for a particular tag like #lifestyle we want no. of post published as well as some top 100 post logic of how 100 are picked we don't have to care about.
+
+Now the post contains some tags we want to increase count of tagused for all the particular tags
+so our tags db would be like (we have compiled all the necessary thing at one place so that we don't have to fetch everything from diff place to dec latency)
+tagName:
+tagId:
+usedCount:
+top100[]<-here we can have list of post Id's or denormalize this by adding actual post object
+
+having postId provides us the updated post data but also includes processing like joing it with post db before giving it for rendering
+
+Now for a simple system if a event comes we have to get the post extract all it's tags and then one by one update count of each tag in db that cause alot of micro writes
+which is a bad design as it's unnecessaraly doing a lot of requests, as we don't want exact count also.
+so better is we do batching like for a batch we update the count in db but problem is we are getting a post that has multiple tags and we have partitianed by userid for that we 
+should have done by tagid but that we can't do due to the order we want as the queue provides that event to notification service also.
+so what we can do is use that above queue and write a adapter with consumer that extracts tags and pass event for tag in another queue partitined by tag here we are not exactly partitianing
+by exactly 1 tag each partitian because tags can be millions so we have defined some hash for tag like #life related all tags in one partitian 
+Now from that partitian consumer picks event and batches it for particular tag updates count+=(n) which is optimized 
+this is adapter pattern ^^
+
+some nodes in consumer can go down we might be recounting some time but thats fine as we don't need exact count
+
+Now we can think of how would the top100 posts come like logic some other team owns and provide the top100 post directly but how it provide
+kafka again -> by sending a event when it is availble and our consumer can pick that and updates in our tags db
+
+Now how user can see this, as request comes for read we can fetch on web server for a particular tag and show but it would most probaly be not very much updating data
+so we can include a cache or a CDN with some ttl.
+
+So more structured way to seeing this would be read and write path we go along each path with simple system then we think about how components would react in load, optimise that.
+
+Question:
+The second queue that repartitianes into hashtags 
 
 
