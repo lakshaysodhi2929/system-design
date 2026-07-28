@@ -266,7 +266,7 @@ when we want strong consistency, foreign key and all, fixed schema we go for rel
 non-relational 
 when we no constraints that relational provides we go for non relational which we can leaverage for sharding the data 
 
-why sharding is a bit risky in realtional sometimes[pointing out just one case]{this is for db level sharding}
+why sharding is a bit risky in relational sometimes[pointing out just one case]{this is for db level sharding}
 {In sharding we can choose which table to shard or not generally smaller tables are kept in all the shards, or sometimes tables that are joined frequently are sharded with same 
 key, while marjorly we don't shard on diff keys but can be a usecase then we need to do some things to avoid cross shard join discussed down a case}
 -> case suppose we have 2 tables in our db both are sharded suppose one has key of other which is foreign to table A and primary to table B
@@ -405,7 +405,7 @@ my-service -> IP1,IP2,IP3
 as the request comes first Domain name is resolved picking some LB IP with some balancing technique than passing the request to particular LB.
 
 Remote locking
-
+(whichever is the closest storage layer locking is done on that)
 at the time of airline ticket booking system thread take locks at db level.
 at process level suppose I ran same process from 2 windows it might say one is already running and exit there DISK level locking there
 
@@ -453,7 +453,7 @@ but if we keep global counter and machine reboots it would again set the counter
 
 so we can store that in some disk
 
-count = fetch()<-- from disk
+count = fetch()<-- from disk--only first time
 giveId(){
    count++
    store count
@@ -464,7 +464,7 @@ but it involve a lot of disk IO
 
 we can significantly reduce that
 
-count = fetch()+1000+1<-- from disk
+count = fetch()+1000+1<-- from disk--only first time
 store count
 giveId(){
    count++
@@ -495,7 +495,7 @@ according to our alignments.
 random uuid based approach
 uuids are 16 bytes long now generally these Id's are indexed means suppose a new mapping table is created with this id and index as column than in ram it is loaded opp are performed
 like join and all then finally rows are readed from the main table.
-so the main part is it get's loaded to ram so we should make it size efficient to eaisly fit in ram, mongo db have epoch_random_counter, 4,5,3 bytes total of 12 bytes
+so the main part is it get's loaded to ram so we should make it size efficient to eaisly fit in ram, mongo db have {epoch,randomcounter}, 4,5,3 bytes total of 12 bytes
 
 
 Amazon design [not needing monotonically inc time]
@@ -574,7 +574,7 @@ why can't user directly push to s3 with security means as obviously we can open 
 
 so this is done through presigned url
 here as user shows intent to upload image meta data along with our s3 bucket and some randome imageId is passed to s3 via BE server[imageupload service] and a presigned url 
-from our s3 bucket is fetched then frontend puts that image on that url which then generally provides CDN url that is mapped to s3 as origin as cdn has integration with 
+from our s3 bucket is fetched then frontend puts that image on that url which then generally provides CDN url in resp that is mapped to s3 as origin as cdn has integration with 
 s3[with auth that we provide] to view the image we can't call the s3 path directly but with that cdn path we can call that internally fetch/cache the image and provides it.
 
 if user want to post that image say on insta on clicking button we want to add that entry in our posts db
@@ -599,7 +599,7 @@ so that they are in order
 what we want?
 for a particular tag like #lifestyle we want no. of post published as well as some top 100 post logic of how 100 are picked we don't have to care about.
 
-Now the post contains some tags we want to increase count of tagused for all the particular tags
+Now the post contains some tags we want to increase count of tag used for all the particular tags
 so our tags db would be like (we have compiled all the necessary thing at one place so that we don't have to fetch everything from diff place to dec latency)
 tagName:
 tagId:
@@ -630,4 +630,178 @@ So more structured way to seeing this would be read and write path we go along e
 Question:
 The second queue that repartitianes into hashtags 
 
+Build notification system yt video
 
+
+How Images are served
+how it happens at frontend
+As be provides the image url to frontend it adds that url to img tag in html and browser do a get request on it in 2xx response header it sees the type like jpeg/png and browser
+has all the decoders so whever is the type it decodes the image and provides the output.
+
+suppose image is statically present so what happens
+when GET request comes to BE server req(<host>/static/fld/abc.jpeg)
+
+Now with every framework like springboot, nginx, flask whenever there is a request comes with /static that handler sees the static folder and follow the path after that and find the 
+locally present file and returns that 
+
+Now if we want to pass a file from S3 instead of that default handler we can define our own (eg. /mystatic) and write a handler for it.
+
+On the fly image generation
+from BE to frotend a URL is provided that gets sets on opengraph <meta property="og:image" content="URL"> tag and when it hits BE the BE can produce image on the fly and return bytes
+with use of some liberary and info of thing that we want to make image of, which is great for changing Images
+
+like when we paste url of some git repo image shows the no. of contributors, forks, commits etc.
+
+
+gravitar
+-> it attaches your gmail id to user selected profile Icon.
+-> user can upload diff images and set some image as active.
+-> any app like instagram suppose if wants to pull icon can just pull it from <gravitar:host>/hash(email)
+
+how to design this simple system
+first lets think of tables that we need
+
+users
+-> userId
+-> email
+-> hash[hash of email can be derived form email]
+
+photos[as there could be multiple photoes for single user so multiple rows would be there for same userId]
+-> id
+-> userId
+-> isActive
+//if we build gravitar and take image from user this is the same photos table that we want to create entry in image upload service after pushing image to s3 via presigned url
+
+
+query for getting a photos -- if we don't store hash in users table
+select * from photos join users on users.userId = userId 
+where hash(users.email) = inputHash
+
+inputhash is provided as input, whats bad in this query is as we are doing compuatation on email each time to get the hash so EVAL has to each time run through all the rows to know
+which matches inputHash that we can optimise by just storing hash and then indexing on it to save on time
+
+optimised query
+select * from photos join users on users.userId = userId 
+where users.hash = inputHash
+
+
+query for setting a image as active
+update photos set isActive = true
+where id = inputImageId
+
+whats bad in this query
+-> anybody can update others active image user id should be passed in input systematically
+-> more than one image can be set to active
+
+update photos set isActive = false
+where userId = inputUserId and isActive = true
+
+update photos set isActive = true
+where id = inputImageId and userId = inputUserId and isActive = false
+
+still one problem is there suppose first query succeed then there is a failure so it leads to inconsistency so better enclose it in TRANSACTION block.
+
+query for getting active photoes
+
+select * from photos join users on users.userId = userId 
+where users.hash = inputHash and isActive = true
+
+to optimise it we have to think a bit out of the box as we are reading all the rows for a particular user 
+as in input we are getting userId not the photoId so to just have the active photo we have to store active photo against user.
+so new schema should be 
+
+users
+-> userId
+-> email
+-> hash[hash of email can be derived form email]
+-> active_photo_id
+
+photos
+-> id
+-> userId
+
+now for the update query also we need not to have 2 queries and first set all photos of user as false then update one as true instead we can just set the active_photo_id
+
+whole design (1:10:00)
+user -> photoupload service -> upload to S3 via presigned url
+     -> call to API to push photoid in photos DB
+
+   API -> update in DB
+       -> push a event in kafka for CDN Invalidation so that resent image can be served 
+
+user2 -> gravitar/<hashid> : gravitar is a CDN with origin API server -> gets active_photo_id fro DB creates S3 path gets the image 
+
+FYI: frontend provide CDN url with BE server origin
+
+ondemand image processing
+<cdn>/hash?imagePixel=23
+
+so generally this is handled by cdns no as they provide it out of the box but if they not we get the exact params at API server and we do image processing with liberary like
+imageMagik and return the image to scale only way is to get machines with high hardware capabilities because job is compute intensive and also scale horizontally.
+
+Impact of having a functionality where people can tag other people in a photo
+-> who can tag me
+-> max limit of people tagged in a photo
+-> self removal of my tag
+-> notification
+-> face recognition and suggestion of tags
+-> users activity page (DB should support query of where all this user is tagged)
+-> we need to store the tag cordinates relatively so if photo size change on diff device it is still file
+
+
+SD: for newly unread messages
+the icon should show the count of people that messaged which are unread and on click of icon count should reset
+
+Requirements
+-> near realtime
+-> update on new message received from user
+
+first we design the DB schema
+messages:
+msg
+from 
+to
+timestamp
+we might index composite basis: to, timestamp, from
+
+user:
+userId
+last_read_at
+
+query to find the count 
+select count(unique(from)) from messages join user on user.userId = to
+where to = inputUserID and timestamp > user.last_read_at
+
+Now this would just work fine but we just want the count so we can optimise it
+
+like we can have a key value pair
+
+userId: Set<>{unique from user messages}. [redis can be used]
+
+now everytime a message come if the message is comming from a user that is already in set the count would stay the same if user is new it increases
+and on user read or just click or messages icon the set can be cleared
+
+so every syetem can be built in ways one is directly calling the source of truth the messages table that gets automatically updated as messages come or other we can optimise and 
+have data in a more consumable form to support the functionality which can dec the latency but increase the maintainability as messages would be added in messages table
+but to support this functionality we would also write logic this way and get the count instantly.
+
+final design
+so for user to do message that goes in dB and also update the count of unique user unsent message [message that are already delivered means user is active on messaging seen we don't 
+want to update the count] we need a messaging service that might use that online/ofline indicator and all to figure out
+user2 -> on websocket connection -> messaging service -> message DB
+                                                     -> on unsent message -> kafka -> consumer {identify from[user2] and to[user1] of message} -> Auxilary redis
+                                                                                                                                 -> if on Aux redis count inc ->  main redis 
+
+get path user1 -> service gets the count -> main redis 
+user1 -> service clears the count for user1 -> main redis
+                                            -> Aux redis
+
+now as main redis is already under load with having get and update + same users does a lot of messages why we want to check his uniqueness on main redis we can do it on Aux
+then if count inc we can do it on main one even if it goes down we can have fallback to do it directly on main redis then, we are aware that on write path there would be another hop
+but the cost is not much as we are preventing redis(DB) to be under load as most messages won't change it's state
+
+DB is most brittle component if opp is not changing it's state we should avoid it. 
+
+improvement functionality: if there are already unique 100+ user messages we can just reject writes on DB and show in frontend 100+
+for Aux redis instead of that set we can have a diff schema like user1_user2 {to_from} exist so don't update if doesn't exist add in aux and udate main redis
+                                          
