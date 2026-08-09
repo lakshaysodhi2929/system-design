@@ -136,7 +136,7 @@ deadlocks: generally databases try to avoid deadlocks by running a deadlock dete
 shared lock 
 Select * from ... for shared
 -> other transactions can have shared lock on same rows
-T1 -> row 1,2,3: read and modify but for modify it has to be converted to exclusive lock for that all other threads have to release there shared lock
+T1 -> row 1,2,3: read and modify but for modify it has to be converted to exclusive lock for that all other threads have to release there shared lock-- not sure on this check it
 T2 -> row 3,4,5 : read
 read throuput increases.
 
@@ -804,4 +804,295 @@ DB is most brittle component if opp is not changing it's state we should avoid i
 
 improvement functionality: if there are already unique 100+ user messages we can just reject writes on DB and show in frontend 100+
 for Aux redis instead of that set we can have a diff schema like user1_user2 {to_from} exist so don't update if doesn't exist add in aux and udate main redis
+
+Storage Engine
+
+CDCs
+
+suppose company relies on database mongoDB and want to put its data into SQL DB easy way is to push the events into a Kafka queue and then process them and push the data in SQL
+- but that is not a good way as data won't be consistent as through events we can't capture all the data as everything doesn't have event.
+- and like in event you can get the whole data that you want to write to target but then network IO would be huge and if you get the Id for which data can be fetched from
+source DB by the consumers and written to target but still we are loosing for having batched reads and writes.
+
+SO better is we do through cdc [change data capture] tools like airbyte, dbezium
+CDC directly captures data from database and pushes that into target database with doing certain transformations
+now capturing data from database can be in different forms like reading WAL , BIN_LOG files and applying changes to target but it depends upon type of database
+
+CDC have there own small db where they take remote locks on a table know which table is read untill which point so that more than one CDC can do the work on diff table in parallel.
+
+the pervious systems that we build where we got the data and from db and passed on that we can also do through cdcs as they are more reliable and fast also as they pull raw large 
+amount data and also we can configure CDC no replica to avoid load. eg MY sql -> cdc -> elastic search or even S3 if we want.
+
+Note: one CDC can write to multiple targets.
+
+Distributed In memory cache
+
+first on single node cache:
+-> storage
+most probably we would need a key value pair so hashmap can be used
+
+now the key would be just string, but the value could be anything so suppose like in java we define value to be OBject but while accessing how would be know that
+so for value we should have a structure like
+{
+   value -> value Object pointer or void*
+   type: type of value to which it should be parsed// we keep in 4 bits only because there are not many types and in-momory we want to utilise space efficienctly
+   lru_bits: 28 bits// for eviction
+}
+now why we need pointer because we might want to have this stucture of fixed size so that it can be better stored sequentially if in list.
+
+now flow would be suppose value is set for our key and we want to add we can just do 'add/push' first it would check if type of our key supports that opp then do else throw error.
+
+-> Cache Full
+but now we would want to cap the memory usage because we don't want to allocate more if memory is already full suppose our cache just reserved 1 GB and if we go out of it we get 
+SEGMENTAION_FAULT
+so as whenever we allocate memory we would be using some function like malloc so we can have a wrapper around it
+redis -> zmalloc(type, count){
+   if(totalsize+type*count>max){evict}
+   o = malloc(type,count)
+   totalsize+=tye*count
+   return o;
+}
+
+-> Eviction
+
+Now for eviction we can keep lru/lfu timstamp/frequency in the same value object
+
+general implemenation of lru: for each key value pair we make a node in doubly linked list as we access them we can pop it out and move it to head and when we want to evict 
+we can evict from tail. [each node location is in hashmap]
+But we are designing a cache suppose key value pair is total of 5 bytes and for making this node
+{
+   prevptr
+   afterptr
+   val
+}
+this takes total 12 bytes its a waste of space so better we can have a randome eviction redis does provide lru/lfu options but they are higly optimised.
+might cause most imp key deleted from cache but would save a lot of space.
+
+When we want to use 
+LFU: least frequently used -> when we know this key is popular in past may not be getting a lot of hits now because of some external reason but in future same trend would be there 
+so we don't want to evict this key, example wikipidia pages suppose new thing came people started searching about it but the standard key shouldn't be evicted because that new thing 
+might not be hot topic in future but that standard high frequecy read article will get searches.
+
+LRU: Least recently used: when there is some trend that is popular now but won't be popular in future example reel trend or news article.
+
+-> communication
+Now there are various protocols like http, grpc
+but like http where we would be sending data with in specified format that would increase the payload size also and 3 way handshake can be inefficient
+in grpc the connection is open but data goes in compressed form so high amout of data transfer can be served through this
+or we can define our own protocol over tcp so any which way our usecase suits we can use.
+
+-> ttl
+as we discussed previously how redis handles this
+we can store ttl in that same value object
+by lazy deletion and that sampling of 20 key is > 25% are expired resample
+
+it is far more efficient than making a priority queue for the keys and all accoring to ttl which would not be space and time optimised.
+
+-> cuncurrency
+
+we can have atomic variables , we can have locking implemented at thread level via mutex and semaphores
+
+optimistic locking
+when we are optimistic that we don't require locking so for that we need opps that if 2 opps comes same time only one of them would succeed
+like update a = 30 where a =10
+a = 20 where a=10
+so if we can do something that at a time only one of them would run then we won't require locking 
+so we have compare and swap that is a operation provided by CPU for if that is runing OS won't do context switching it is provided by every language//attomic instructions
+-- read more about it
+
+single threaded
+if there are not multiple thread won't cause concurrency :)
+
+Distributed cache(HLD)
+Now as load grows or we need more storage we would need more nodes so we can distribute the load
+
+Now we can make mutually exclusive sets like keys from [a,j] goes to 1 node [k,q] on second node and rest on last 
+
+-> routing
+there are primiarly 4 ways to do this
+-> having a routing layer in between that tells which node to go: have a extra hop
+-> client is smart knows which node to go: if topology changes client needs to be updated
+-> client just connects to one node that node connects to other seeding node and gets the response like bittorrent: complex for a cache
+-> client asks a node and it returns the IP of node that should be connected for the required key that's how redis does this atleast for write where if request goes on replica it
+sends IP of master
+
+2:07
+-> scaling
+if we do a hash based routing [that we generally do] 
+serverToWhichKeyroute=hashfun(key)%NoOfServer
+suppose we want to add/remove node that will cause a lot of data transfer mostly 50-60% of keys would need reshuffleing to other nodes
+
+to solve this consistant hashing is the thing that should be used.[MINIMAL DATA TRANSFER]
+server would be in ring(2^128 big) what ever hashfun(IP of server) returns where it sits in ring,hashfun(key) just the sever next to the right is the owner of that key.
+
+only the keys that lies before the removed node and last node to it are needed data transfer--in case of removal 
+-> if we want to remove a node gracefully the data of node that is going to be removed just needs to be shifted to node afterwards.
+-> if we want to add node gracefully we add the data of node afterwards to it then slowly reove that data from node afterwards
+
+if suppose removal happen abruptly due to node down then max what happens key would start checking on next node to the one removed it doesn't have data so there would be
+cache miss and data is retrieved from BE server so might inc a bit of load there -- same for direct addition of node.
+
+now suppose if we add virtual node means more than 1 place for a node in ring it would just make more data transfer in case of node addition/removal which defeats the purpose
+of consistant hashing a bit, but it's still not that bad if we have a usecase.
+
+Distributed cache are nothing but DHT distrubuted hash tables that are optimised for minimal data transfer using techniques like consistant hashing
+everything on internet is DHT just change the storage 
+in memory - distributed cache
+on storage - distributed storage
+
+like Distributed cache there is a version that connect to nearest server it will tell you where to connect to similar for DHT bittorant does the same.
+
+-> Availability
+have replicas or standby nodes
+if using consistant hashing next node can have the data of previous one or may be 2 next nodes[replication factor]
+
+-> reliability
+write ahead log whenever you write something it goes in this file when cache rebuilds/reboots it can build using that. redis uses this.
+
+Making a english dictionary 
+keys - meanings (read heavy)
+- we have to store 1TB data for like 170000 words
+- we can't use any existing Data base
+- some latency is fine
+- writes for addition or updation are only once a week so we can have a big process for that
+
+-> storage
+if we store in json then as to search we need to load the whole json in memory 1Tb data -- expensive
+better is we store in a text file like a CSV
+
+-> querying
+key:meaning\n
+now for reading doing a linear search means again loading that 1TB file in memory which we don't want, so when reads are slow we should have indexing
+index-> key,offset(integer representing row of key in csv)\n
+size of index avg size of key -> 4.3 in eng dictionary
+4.3+4(Int)+2(, and \n)=10.3 -> 10.3*170000(words) = 1.75 mb which is peanuts for cpu
+
+so index size is very small we can load it in memory every time and have a pointed read in main csv file
+
+-> protability means how easy we can ship
+so Ideally we should join these and ship together
+How to identify that here index would end we can add some special char for that but that is a bit tricky hack
+better is on start we store the byte offset where the index ends
+this is like the header of our file
+like different file formats png have first 3 bytes saying p n g
+so that decoder can verify the format
+so our headers would be 
+- my_db[some random name] 5Byte
+- version 4Byte
+- index_offset [4Byte] value -> 10.3*170000
+
+So when application boots it has decoder for our format it knows reading 13 Byte for headers then extract the index and load a hashtable in memory then start retrieving data,
+Thats how majorly all file formats are built, parquet format is also like this having headers and all
+50:00
+
+
+Now lets talk about infra
+user-> LB-> API servers -> shared storage
+
+now we can attach a SSD with each API server whats bad with that
+-> cost: storing 1TB on each server is not fine
+-> small problem is could lead to some inconsistancy when updates fail on any server
+
+So we are having a shared storage 
+what we want from it to provide us random reads or the file system symentics like we give (file, offset, n[bytes from offser]) and it should give us that only
+This can be done by any network attach storage OR DB since we are not using DB here so any blob storage could work like S3 or HDFS
+
+So API server will first pull 16 bytes header than read the index bytes and form a in memory hash table of index than ready for a pointed read. Thats a small key value store.
+
+Now lets look at write path
+suppose lets say as we get the change log file once a week we simply go to that index and replace the words meaning, that we can do in ram but on disk as we update
+it will eventually start overwriding the existing bytes and might overwride the next word.
+
+so better is we create a new file As the dictionary would be sorted and change log is also sorted if not we can sort change log ourselves then do a merge sort type thing
+have a pointer on each the file data and change log, move the file data pointer as the word is matching with change log add the new defiantion in new file and move the 
+change log pointer. 
+But if we do it on network that would be very much slow as it is a huge file so we should spin up a new machine for writes and have a requirement to have big disk in it.
+load the data in disk and create a new file in disk then lets deploy.
+
+Now what we can do is deploy on same path but the problem with that is 
+suppose file is currupted or upload failed and we remove the existing file we have to do a lot to restore that + have downtime
+and major problem is we want new indexes as file is new so we immidiately have to inform the API servers to again create indexes
+
+
+so better is we upload to a new path but each week updating a path mannualy + if the update extends, is not a good approach
+lets have a meta file in S3 which have a fixed path that server can pull to check the latest path
+
+but server will eaither have to poll the meta file which seems unnecessary so better we tell the server to get it so as the upload is done by new machine we can pass a event in
+pub/sub which servers are subscribed to then they know they have to read new file and create index with it.
+but isn't that complex + that is what server does on restart 
+
+so we just need a new deployement so as the file is uploaded we update the meta and trigger a new deployment maybe a jenkins pipeline to reboot/restart the API servers
+
+so we made a ability to do pointed reads over S3 that what S3 Athena does, its used for moving our hot data stored in ssds to cold storage where we can still do pointed reads
+
+1:46
+
+Superfast DB kv
+ram,  ssd,       hdd
+harddrive storage are cheap and because data is storead on actual magnetic disk, how data is retrieved first sector is located disk is rotated and head moves to that location
+then actual read happens, so with this cheap storage we want to create a KV.
+
+Everything with persistance
+put
+we can just have a file and do append only operations so that once the head is at the sector where file is present we can just move it ahead and save the searching time.
+delete
+we can again append the key with value some special char that represents deletion.
+update
+for updation we can append the new value again
+get
+we can have a in memory hash that points to ofset in disk and on delete we can remove index , on update point to diff location and if machine restarts we just have to make
+index again.
+
+limitaions 
+-> we can fit in as many keys as we can fit in allocate memory for ram
+-> and we are not collecting garbage so there we are limited by values we can store at disk.
+
+so what we should do is as the file grows , as we know the file system also doesn't allows for very big files + we want to filter out garbage without effecting the fast writes
+that we are suppoting via append only thing, so we can split the files like decide a certain threshold suppose 500mb then start writing to other file, now that file we are writing
+is active all other are just read only files this is called file rotation. Now we can do merge and compact on the non active files to get the garbage collected.
+we can read those files and make a new files out of them without the deleted values and delete the old files but now we have to do the in memory index updation also.
+index would be like Key-> file, offset
+
+now we have to take care about the file rotation threshold and at the same time the merge and compact frequency or flush frequency so that our cpu is not loosing on 
+performacy due to doing merge and compact a lot of times + our disk won't get full with stale data, so we need to adjust these values and make the system running smooth.
+
+Now on storing this applies to dictionary also
+we don't just store in csv or some file directly because how would we read a key value then [command: read untill \n] that is very unoptimised as it involves a lot of disk I/O's
+
+so we should store in blocks like K:bytes,val:bytes-> then actual key value
+so when reading we first get the total bytes then read key value
+
+now suppose while writing a gigantic value system crashed and after one block second block got stored so while reading those no. of total bytes we get on to reading partial bytes
+of other block that is really a problem of serving currupt data that we can avoid, How?
+by just taking hash of K:byte,Vbytes,K,V called CRC [cyclic redundancy check] and storing at the front so that it along with K:bytes and V: bytes would be stored in first, 
+as this we want to be stored atomic disk I/O so the even if we failed to store next bytes we can again compute if hash is correct and then only serve the data.
+so block is like CRC:Timestamp:Kbyte,Vbytes,K,V
+index would be like Key-> fileId,total record size,offset,timestamp
+
+so what we designed is bitcask  
+its a liberary that we can run on server that provide high throughput for storing and retrieving data, Uber uses Riak that is a wrapper over bitcask that make it distributed
+like elastic search is a wrapper over lucy similar 
+
+
+multi-tiered storage
+when the data we are storing is huge even after having read replicas and sharding we can't able to support it or we see that most of data is infrequently accessed so better to move 
+that data some where else not on main database.
+Hot tear 
+transactional 
+reads/writes happen
+like mysql
+consistant
+expensive compared to other
+
+warm tear
+non transactional 
+reads happen
+horizonatlly scalable
+
+cold tear
+in frequent reads 
+for compliance purpose
+should be cheap
+
+
                                           
