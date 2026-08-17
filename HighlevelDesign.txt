@@ -555,7 +555,8 @@ instagram ofloads this logic of snowflake creation at service layer to DB by wri
 this makes them more scalable as now they can have more than 2^10 machines 
 there snowflake epoch[41]_db_shard_id[13]_shard_sequence_no[10]
 
-so now they are limit by DB server having  2^13 some 8000 shards, but that is infact very large.
+so now they are limit by DB shards having  2^13 some 8000 shards, but that is infact very large.
+BTW shards are logical seperation may be 1 postgres server have 100 shards in it
 
 
 CDN
@@ -994,7 +995,7 @@ now we can attach a SSD with each API server whats bad with that
 -> small problem is could lead to some inconsistancy when updates fail on any server
 
 So we are having a shared storage 
-what we want from it to provide us random reads or the file system symentics like we give (file, offset, n[bytes from offser]) and it should give us that only
+what we want from it to provide us random reads or the file system symentics like we give (file, offset, n[bytes from offset]) and it should give us that only
 This can be done by any network attach storage OR DB since we are not using DB here so any blob storage could work like S3 or HDFS
 
 So API server will first pull 16 bytes header than read the index bytes and form a in memory hash table of index than ready for a pointed read. Thats a small key value store.
@@ -1023,7 +1024,10 @@ but isn't that complex + that is what server does on restart
 
 so we just need a new deployement so as the file is uploaded we update the meta and trigger a new deployment maybe a jenkins pipeline to reboot/restart the API servers
 
-so we made a ability to do pointed reads over S3 that what S3 Athena does, its used for moving our hot data stored in ssds to cold storage where we can still do pointed reads
+so we made a ability to do pointed reads over S3 thats what S3 Athena does, its used for moving our hot data stored in ssds to cold storage where we can still do pointed reads
+
+PS: To get the performance we don't directly store data in S3 in simple format we store it in apache hudi to make more retrievable and athena or prestoDB retrive that through
+Hive queries which internally uses spark jobs to process them and get data.
 
 1:46
 
@@ -1073,26 +1077,248 @@ so what we designed is bitcask
 its a liberary that we can run on server that provide high throughput for storing and retrieving data, Uber uses Riak that is a wrapper over bitcask that make it distributed
 like elastic search is a wrapper over lucy similar 
 
+These are called log structured storages:
+kafka is a example of it as well, whenever we need high write throughput log structured storages or append only files are the solution, each topic in kafka has n partitians, assume
+partitians as nothing but append only files only.
 
 multi-tiered storage
 when the data we are storing is huge even after having read replicas and sharding we can't able to support it or we see that most of data is infrequently accessed so better to move 
 that data some where else not on main database.
+
 Hot tear 
 transactional 
 reads/writes happen
 like mysql
 consistant
 expensive compared to other
+fast
 
 warm tear
 non transactional 
 reads happen
 horizonatlly scalable
+little slower
 
 cold tear
 in frequent reads 
 for compliance purpose
 should be cheap
 
+multitier storage design
+-> suppose we have a order service that is queried by payments, user, logistics , and the writes happen to ordersDB which is transactional [Hot Storage]
+-> the data here has some deletion policy 
+-> A cron job runs periodically which transfers the data from HOT tier to a staging storage [temporary Dump] and not only the data from ordersDB but it kind of agreegates the data 
+   from different sources like payments and logistics and structures it into a big document specific to a orderID.
+-> from staging storage (S3) a spark job[loader] picks the data and transfers it to warm tier which is horizontally scallable and distributed like may be in MongoDB, Elastic search, 
+   Dynamo DB, HDFS
+-> now this tier is basically read only.
+-> Now how our service figures which tier to query that's where our Id generation logic comes if we have snowflake with timestamp in it and we know our data deletion policy we can
+   know where to find the data.
+-> similar way we can transfer data from warm to cold storage like S3 and store it in a structured way like apache Hodie, if we need pointed reads we can have that pointed reads
+   via athena(dictionary like that we made perviously) or prestoDB but as it would be slow, if we want to fire a lot of queries on it for a usecase we can have a job that transfers
+   specific data to a temporary DB where we can fire queries and have analytics on it.
+-> BTW we can use CDC's while transfering the data as we just care about data and not dealing with application logic.
 
+Just some facts
+-> we can turn on and of for bin logs 
+-> bin logs are generally stored on disk and have a retention policy configured
+-> if CDC's/replicas consuming those bin logs crashed when they get back and start consuming from where they left and at that point suppose bin log gets deleted and we want that data
+for replica that is a situation which is like reforming the replica where we take a snapshot of primary data and from that point start applying logs on it, similarly for CDC we 
+can have a strategy.
+-> how does CDC and replica know where they left of when they get crashed CDC generally have external storage to store that mainly that orchestrator of CDC has access to which tell
+particaly instance, and replica generally store this meta info in disk where the data exist to which it has applied logs onto certain point.
+-> suppose the source of CDC is down that is why bin logs are accessed by CDC to consume and suppose target is down so better strategy would be putting events into kafka that remains
+persistant for a while that target consumer can pick and applies.
+-> relay logs generally replica also have relay logs that are logs received from primary they get purged once processed they act as a buffer untill the replica applies them.
+-> why having CDC on replica doesn't mean no cost, because then replica has to enable bin logs atleast which might not be needed elsewhere.
+
+1: 00:00
+
+lets Build S3 like storage
+
+storage:
+on S3 everything is key value pair the paths where we want to store the data example /temp/bin/abc.txt this is a key and the file is the value for it to S3 we always provide the 
+memory our file would consume like 1 GB and path.
+on normal file system the paths and all are managed by filesystem itself so under a directory path is a inode that has its meta data like size location on disk like its sector 
+it's a log structure storage only but the paths are managed and inodes are like a tree structure.
+S3 is also log structure because we want to use HDD as they are cheap and instead of having inodes we simply have key value where key is path.
+
+so suppose 1 disk gets filled by data that we put in it then we would go to next disk and then to next so generally they are structured together in linked list type structure
+and managed under storage rack by drivers and in data center we have multiple storage rack connected together.
+
+suppose 1 disk is 10 TB and there are 20-30 disk in rack and we decide to give 1 rack to each customer but suppose customer just fill 100GB and rest is waste, so to lower our cost
+we want to fill the rest.
+
+As we know S3 supports editing a file or deleting a file, now as we know to have write throughput we have to do it in append only way, we need to make new file for new edits and 
+mark the files as non active for deletes[remove entry from external DB].
+
+to know which file version is located where on disk like the path that driver of rack provide S3 stores that in a seperate DB {bucket:disk,key-> sector, version of file}[another 
+DB for pointed reads like that hash in server in dictionary example]
+
+and at merge and compaction we will remove all this data, BTW S3 also provide a feature of object versioning if we enable it s3 don't delete the previous versions during 
+merge and compaction.
+
+How driver move to next disk?
+As we don't want to impact write throughput so we start the process of moving to next disk as disk is 70% full, so still intermidiately we would be writing on old disk. and 30%
+buffer that we have we can use in merge and compaction also. 
+1:50
+
+Rounting:
+user -> S3 servers -> storage racks
+
+now how to decide which rack to route to suppose we have these items to store
+bucket1:Key1, bucket1:Key2, bucket2:Key1, bucket2:Key2, bucket3:Key1
+and we decide we hash bucket and key and assign some rack to that hash but to very hot keys got assigned same hash and even we control the request per min at api server level
+[throtelling] per bucket, still if the request comes for same rack in worst case so that's why hash based routing is not feasible here due to hot partitian problem. As we don't
+want the control of routing to go to hash function.
+
+so in this case we generally prefer range based partitianing like [a,g] [h,l] [m,z] suppose [h,l] is hot we can split it, the control lies with us and side effect that is has
+is tenant isolaction suppose some company netflix have there data mainly in one rack or nearer rack.
+
+Solution for solving hot partitian problem[not related to routing]
+-> As shards are logical seperations only every db provide command to take a dump of it, so suppose some partitians get hot we can take dump of some and move that out to diff. 
+server and remove existing one, changing the configuration of location of shard for which this partiatian is.
+
+-> Elastic search provide this out of the box it provide, with head plugin we just need to drag and drop the hot partitian to another node.
+
+Now as there are multiple storage racks S3 servers can't determine which rack to call as for a product like S3 there would be huge amount of racks, and all the different request 
+from netflix, prime goes to S3 api server which also make that hot so better is we assign this job of routing to rack for another set of partitian servers that knows which rack
+contains data for a particular partiatian
+user -> s3 servers -> partitian servers -> storage rack
+so one partitian is owned by 1 partitan server but one partitan server can own multiple partitians
+partitain server[a,e] -> node 1[a,b](rack)
+                      -> node 2[c,e]
+so both the racks and partiatian server handle request in range based partitians and server know which rack to access.
+In case one partitian server gets hot we can transfer some partitians that it owns to another server, this is done by partitian manager or orchestrator. 
+For ensuring availability of partitian manager we can have leader elections like workers will check the partitian server health checks and if worker goes down taken care by 
+master and if master goes down taken care by leader election.
+so s3 servers check partitain map table managed by orchestrator and call to partitan server that talks to rack.
+
+Here the question is why we are directly checking partitian map as it is managed by orchestrator or partitian manager shouldn't we call partitian manager it gets the partitan for
+us and then fwd the request to that partitian and directly gives us data.
+Because here we are dealing with huge amount of data we want less hops in data transfer. so we directly talk to partiatian server itself. and we know partitian map is nearly static
+won't change much so going through that manager layer is better here. This is how we go counter-intuitive and build in more practical way.
+
+Durability:
+only way to insure is redundancy
+be it writing in same disk in 2 sectors
+in multiple disk in same rack
+in multiple racks
+in multiple dcs of same region[async]
+in multiple regions[async]
+due to this in previous layer a lot of additional info needs to be stored
+
+integrity
+passing checksum at every layer and checking before passing the data be it reading or writing.
+
+S3 chunking part
+as S3 stores in log structure storage which lets say can't reserve huge tbs of data for a file before hand but S3 gurantees that they can store lets say 2 tb[logical final] so 
+chunking would happen into 2000 1 gb files[physical seperation] and all the chunks metadata would be stored in hash table like chunk1 in this sector and chunk 2 in this etc.
+So As S3 is write heavy system we can get a huge file from user and suppose our network and disk write at certain speed we can parallelize writes into chunks,
+we can build to read/write in chunks but generaly we do sequential so it's not very much needed.
+
+High throughput system 2
+so As we have designed bitcask which is optimal on reads due to hash in ram and write due to append only writes with minimum head movement
+
+but as we are persisting each write in every request we are reducing a some of throughput, we can accept write and have it in buffer[ram] and later store in disk.
+this is how we can have a impact in performance but what if our server goes down, yup if we are okay with loosing on a bit of durability 
+As this high write system suits purpose for sensors producing events, frontend like moving of cursor and all analytics of that anything that is produced by machine
+google maps streaming person location,
+so if that goes down for 1 min that won't have a big impact right so we could live with that,
+but writing on ram would inc the infra cost - if we estimate that how much it would increase the cost so the graph would be like a tooth-saw first inc then on flushing to disk
+then there would be down trend[ram utilisation graph]
+if my ram is 1000mb and we are writing at 1mbps then we should flush every 1000sec
+
+How the reads look like 
+simple ans is we first check the ram if we get then return else we check in storage check if it exist and returns else 404, it does look like ram but we are not seting value
+from disk to ram if it is a mis as that would inc the infra cost that we don't want, here we have to do multi tier reads.
+
+now as we are writing we have some key value hash map in ram that we are flushing to disk may be in some header and key value structure similar to bitcask so what format we should 
+write -- ss[string-sorted] tables it's a format that serializes that hash in ram to key value in disk.
+
+Now when we write eaither we can append in that same file or create a new file, appending in same file holds the complexity if we make the file too big it would slower the
+write and there is some limitation on file system level also. and when we append we have to update the indexes of the file so that they are correct according to new new values.
+if it is time series database with sequential writes and as key would be time so would be just moving forwad then we can have just one file which would be better as done by
+influx DB.
+
+so lets say we create the new file always and one thing to remember we are not having that fast lookup for keys in ram as we have in bitcask because we are building a write 
+heavy system and we are handeling a lot of file updatign hash is something we don't want to accomodate, we just have ss table in ram that we periodically flush
+so if we have a lot of files we have to iterate through all of them to know if a value exist and if it does all the previos values are stale so we should also have merge
+and compaction to remove that, and as the ss table provide the new entries in sorted format only so we just have to do merge of sorted values that we have done previously
+which is a lite opperation.
+so how disk utilisation looks like tooth saw but with each tooth  hight increases and the depth starting point also goes up as we are writing some new data every time.
+and on merge and compaction we would see some dip.
+
+but if a team has mostly lookups where key doesn't exist that is worst for them, so we should know at ram level we should search or not.
+so for that we can use bloom filters [they get the hash and turn up the key] as when they say no it is 100% key don't exist and when they say yes it means key may exist.
+if we store in set we need to store every bit of key which would take the space in RAM. and bloom filters take constant space and in ram we don't want to keep things that can 
+grow exponentially.
+and suppose we want to store this set or bloom filter on disk even then doing a disk based set lookup would be very much expensive than a bloom filter based lookup because
+bloom filter is just a array.// we have to store this in disk as we have to make it persistant because on reboot of machine we don't want to make it again so eaither we can lookup
+in disk or load that in memory.
+
+suppose some team doesn't want to loose any of there data, so that would be problem for us
+one possible solution could be we can write everything in a WAL file too on disk and as we flush our in memory buffer to disk we will remove that WAL file, so even if our system
+crash we can reconstruct using that WAL file, and provide this functionality as a configuration as it would reduce the write throughput.
+but wouldn't bit cask a better solution for them.
+-> could be but they are bounded by number of keys in ram here we are bounded by no. of keys in disk which can be huge as we are flushing the ss in disk periodically but if the team doesn't have 
+high no. of keys than bitcask is a way to go for them.
+-> And WAL would just be the file that has recent changes and to reboot the system we just want the recent changes to make our in memory ss table so there will be faster reboots
+and high availability. as in bit cask have to read whole file to make in memory hash lookup.
+-> And as we have recent key value both in ram we can just serve that if request comes for them.
+
+So this was LSM tree used by -> rocksDB, levelDB, BadgerDB
+-> when we need high write throughput and want faster recent added reads LSM trees shine there.
+LSM tree -> tree is as we create new file in disk every time when we merge and compact it reduces to less files[level 2] then less[level3] that forms a tree structure.
+
+why not use redis instead as it also provide persistance functionality -> as it provide persistance but still everything should still fill in ram so it should be memory bound. 
+
+1: 50
+youtube video processing pipeline
+-> video upload - same insta photo upload to direct storage(S3) via presigned url
+-> video processing 
+-> video distribution
+
+-> video processing once the video is uploaded before publishing
+   we want to transcode it into some format like 480p 
+   generate thumbnail
+   check for objectionable content
+after publishing
+   we can generate more types of formats like 720p and 320p
+   generate transcripts
+   recommendation
+
+so when can user hit that publish button - once all the 3 conditions are met 
+so may be we can put a message in kafka after the video is uploaded and the consumers can pick it up but we can trigger the publish once all three are done, for that we might 
+have to write some custom logic taking care of retries and all which would add a lot of complexity 
+instead we can use a workflow management tool like - apache airflow. which abstarcts all that and provide a visual represnetation of nodes to design our workflow.
+underlying there is a master which is the orchestrator that puts task in queue and any worker can pick that and update the result in db. master polls DB and check which nodes
+are completed and just pushes there children in queue the periodically runs a job that check whoever in queue does they have any other dependancy if not put in main execution 
+queue from where workers can pick.
+
+
+transcoding
+formats are containers that can have video, audio subtitles, stored on disk
+these are decoded by codecs 
+
+generally ffmpeg is used for transcoding: once we upload video youtube takes that runs ffmpeg for different formats and upload them
+
+for live interactive streams: janus, webrtc, TURN servers
+resources: 100ms, howvideo.works
+
+for live matches they are actually not live 
+as the footage is captured it is send in some segments at a freqency those segments are transcoded at the time and when we pull that through cdn, cdn defaults to s3 as origin 
+and we get the transcoded format in which we are watching if we change the format the app like hotstar would pass that format in params to cdn it will fetch that format particular
+segment and provide to use then it constantly fetches 1 segment after another.
+
+whole flow
+-> user upload to video upload service which creates a entry in video db for video id and provide presigned url where we can upload the video
+-> while video is being uploaded video service also calls channel service to create entry in channel db which holds info for meta data of video as we don't want to couple it
+together because we want to send them seperate so that video playing won't get delayed, as on youtube if we click may be info comes late but video starts running, so both
+calls can come parallely. 
+-> once video upload is done it calls the workflow management Airflow through which a workflow is triggered and video made ready to be published. and data in channelDb can also be 
+populated by user like title, description, status(by default draft)
+-> once video is published we can do the distribution- we can push events to a kafka via cdc of our channel db 
+-> now the search service can consume the event to create index for elastic search, we can capture watchtime and push event to kafka which can be used by trending service, which 
+can call CDN decider to ask CDN to direcly cache that trending video.
                                           
