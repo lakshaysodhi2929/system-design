@@ -815,7 +815,7 @@ suppose company relies on database mongoDB and want to put its data into SQL DB 
 - and like in event you can get the whole data that you want to write to target but then network IO would be huge and if you get the Id for which data can be fetched from
 source DB by the consumers and written to target but still we are loosing for having batched reads and writes.
 
-SO better is we do through cdc [change data capture] tools like airbyte, dbezium
+SO better is we do through cdc [change data capture] tools like airbyte, debizium
 CDC directly captures data from database and pushes that into target database with doing certain transformations
 now capturing data from database can be in different forms like reading WAL , BIN_LOG files and applying changes to target but it depends upon type of database
 
@@ -1262,7 +1262,7 @@ one possible solution could be we can write everything in a WAL file too on disk
 crash we can reconstruct using that WAL file, and provide this functionality as a configuration as it would reduce the write throughput.
 but wouldn't bit cask a better solution for them.
 -> could be but they are bounded by number of keys in ram here we are bounded by no. of keys in disk which can be huge as we are flushing the ss in disk periodically but if the team doesn't have 
-high no. of keys than bitcask is a way to go for them.
+sall no. of keys than bitcask is a way to go for them.
 -> And WAL would just be the file that has recent changes and to reboot the system we just want the recent changes to make our in memory ss table so there will be faster reboots
 and high availability. as in bit cask have to read whole file to make in memory hash lookup.
 -> And as we have recent key value both in ram we can just serve that if request comes for them.
@@ -1272,6 +1272,9 @@ So this was LSM tree used by -> rocksDB, levelDB, BadgerDB
 LSM tree -> tree is as we create new file in disk every time when we merge and compact it reduces to less files[level 2] then less[level3] that forms a tree structure.
 
 why not use redis instead as it also provide persistance functionality -> as it provide persistance but still everything should still fill in ram so it should be memory bound. 
+
+why not keep the indexes of each key in ram, as we can have billions of key and little ram can't fit it, and by nature in memtable the hash that we create in ram is sorted 
+and in disk also the data is sorted so db uses sparse indexes to find blocks in sorted data and that reduces the search.
 
 1: 50
 youtube video processing pipeline
@@ -1321,4 +1324,280 @@ populated by user like title, description, status(by default draft)
 -> once video is published we can do the distribution- we can push events to a kafka via cdc of our channel db 
 -> now the search service can consume the event to create index for elastic search, we can capture watchtime and push event to kafka which can be used by trending service, which 
 can call CDN decider to ask CDN to direcly cache that trending video.
+
+Design recent searches
+-> 50% user open the search bar in 5 sec of opening the app, means high traction
+-> 30% of searches are just recent searches 
+
+we want the cross device consistency: means if I search on on device it should be available on other device recent searches on refresh
+we need 10 recent searches
+
+storage
+so may be the requirement say we just need 10 recent searches but we should only go for storing all the searches done by every user because it gives invaluable data to anylytics
+
+so how would we store
+searchdoc = {
+   timestamp// we want recent so sorted data would be required,
+   query,
+   userid,
+   deviceId,
+   OS,
+   browser,
+   region
+}
+userId -> [searchdoc1, searchdoc2,....]
+but as we know we would be storing all the data which is unbounded so the list will grow to a huge extent and if we want to add some searchdoc what database engine would do is
+get this list into ram and add the query, which would become very much expensive
+
+so better is we should store all the searchdoc like seperate documents or seperate rows, 
+As we know traffic could be huge so database need to be partitianed heavily on userid[we want searches for a user] so MongoDb or elastic search could be better[ref read sqlVsNoSql.txt]
+to cop up with high ingestion rate we would have a kafka because kafka has high write throughput to which we push all the searches that goes to consumer which does the batch  
+ingestion on Db because single would have a lot of load on db[read batching.txt]
+from there may be we can move data to cold storage for a configurable time of 6 months.
+
+optimise for 10 recent searches
+46:00
+-> simple approach would be directly quering DB as it is partitianed by userid so cross shard queries won't be there and we can have a index at timestamp so that we can store that
+in sorted order.
+-: to search for anything we generally need indexes eaither accending or decending other wise sequencial search would be very slow, 
+here we can have a composite index of userId_timestamp, timestamp is also required to be indexed as even we are ingesting queries that decending by timestamp still if we get the 
+documents from mongoDB for a User it won't come in insertion order.
+but As our DB is having a lot of write load maintaining a index would firstly slower down the writes as DB implicitly would write on data and on index, and writing to index is 
+not straight forward as they are maintained internally in B-Trees/B+trees so balancing[split of node] happens in them 
+other thing as per requirement reads also have high traffic so we will be putting a lot of load on DB, and reads would also become slow eventually.
+- so should we drop this index as we actually don't need it for whole data we just need recent 10 searches and we are effecting our write throughput due to this, but if we drop this
+our reads would go very slow and on click of search bar if recent searches don't come in very quick that is a poor user experiance.
+-> so by that our writes are fast to optimise on reads we can write to redis also and have AOF(append only file) ON so that data will get persisted in redis machine disk
+so that if node goes down it gets back up with existing data: in AOF redis first persist on disk then write in memory, in redis we can store userid-> [search1, search2...] 
+recent 10 searches have logic at service to evict if > 10 and return the result immediately.
+-> just the problem is we have to write at 2 places which could pose consistency problem as one of kafka/DB for writes or redis for read is down we can lose that data
+but it is fine as we don't want very high consistency in our system and mostly service will be up.
+-> according to transaction outbox pattern even to solve this consistency we should do DB write and redis write through kafka consumer but then we are doing async write to both 
+that will make our read slow so we can do the 2 writes via our search service only. 
+-> calculation 10m user , avg query size 16 bytes, 10 query -> 1.6 GB
+1:27:25
+
+Designing cricbuzz's live text commentary
+requirements:
+- user should see live text commentary
+- cost efficient Architechure
+- good user experiance
+- design reallistically
+
+brainstorm: storage, Access, cost optimization, communication
+
+As it is a read heavy system only one person to write that adds the commentry so we can store the data in DB with replicas only one master is enough as data is just 
+calculation 600 balls* 1kb each ball commentry*20000 matches lifetime = 12GB thats peanuts
+we don't need partitianing not for storage and not even for network as there is 2 req per min for write.
+
+to serve reads we should also write in cache like redis for the active matches because mostly user will read commentry for those 
+now the question is should we keep all the comentry for them till now? as for a match its just few mb which we eaisly can have on redis 
+on redis we might can but on other caches not because 
+read -  suppose I have all the ball data so I will be passing that to API server and then client which would increase networkIO unnecessaraly
+write - when I want to write first whole data is fetched from cache then new data is appended then it can be written again to cache same networkIO problem
+so not a good Idea to store whole match we can just store the last 10-15 balls for active matches.
+PS: redis handles this with partial reads and also provide append operation so that whole data not needed to be fetched by server.
+
+read path:
+as the commetry seems to be pushed to user feed we can have server sent events/websockets means persistant connection but for that our infra cost would also shoots as we have 
+machine that supports that and users would be on multiple websockets when write comes we need to use that redis pub/sub to fan out the update to all the websockets so it 
+reach all the user for that match. 
+Instead we should use short polling as there is delay between ball we can just poll every 10 sec.
+
+write path
+As the commentrator would write it can go as sync request to both redis and db question is what if one fails as we want to have consistant data here, we might have complex solutions
+to have asycn behaviour to retry and all but simplest is as the commentrator is our employ we can just show on comentry console that write failed and retry is needed And may be
+on frontent we can cache the comment in browser so commentrator just need to hit submit again.
+
+can we have the recent commentry caches in servers directly and not on redis? no because then we have to insure in all server consistancy of passing the recent write instead
+have a common place to read is better.
+
+for this system where writes are very few the replication lag would be almost 0 because replication lag happens when there is high writes on master and high reads on replicas 
+it is cpu bound thing as cpu won't get time to catchup but here writes are very low even if replica got a bit of time it will apply the new data.
+it can happen for a few mins if network gets broken b/w replica and master there would be some lag untill network is back up, but that doesn't happen all the time. to even solve
+this if we want high read consistancy we can read frmo multiple nodes and serve the latest one. we might not want to solve it due to low writes in that window.
+
+2:31
+Relevence techiniques
+search service-> elastic search
+we can apply relevence techiniques on top of elactic search
+
+-> weighted score: like we search for a name the article that has that name in title is more relevent than if it is mentioned in some article's description somewhere
+so we give different weights to different feeds and then rank while giving results 
+-> fuzzy search: it searches for all the words that are one edit distance away for some x char word, like if we search for bat -> cat,mat,ban are also the candidates still bat would
+be more prefered, internally implemented by BK tress forms nodes and whatever is having 1 distance from actual word are condidates 
+-> spell correction - it is very domain specific what ever in company dictionary the word is corrected to nearest one and searched in db, like swiggy would have dictionary of food
+items.
+-> synonyms: like if we search for USA then america would also we be searched. so company would be having there synonymes list.
+-> phonetic: sometime pleople know the sound of word but they don't know the spelling, so when the data is indexed in elastic search the words are converted into root words or
+sounding words [metphone, soundex does this] like video -> VDO , vedeo -> VDO
+-> query segementation -> firstly of all these, the query is segemented means spaces are put where needed like mcdonalds -> mc donalds
+
+so elastic search gives us all the non domain specific things like fuzzy searching, weighted scores
+
+
+Distributed task scheduler
+
+schedule a task to be executed
+- at a certain time
+- reccuring task [cron]
+
+- SLA -30 sec means if it is sceduled for 10:01 it should be picked up by 10:01:30
+
+- minute level granularity
+
+storage
+id, command, scheduled_at, status
+status is just to render on UI but what if task failed and machine crashed so that older state remains and it don't move to failed. so this status can later on be derived so we 
+might not store it.
+
+implemenation
+user -> API server -> DB <- executors
+
+user will add the scheduled task and executor will pick, now the questions are
+-> how many task will be picked at a time
+it's better to pick one task at a time because if machine crashed other task won't be lost which didn't even started execution.
+-> executor will execute that or will assign to some worker
+one possible thing could be commands can be non homogeneous like on require some python liberaries to execute other have some golang dependancies so we shouldn't have generic 
+machines so better to have workers and executor figures out the command type then assign to some worker// may be we store type along with command
+but still we can have different executor that picks the specific task lets write the query to think this through
+select * from tasks
+where scheduled_at< now()+30 and status = not_started
+for update skip lock---exclusive skip lock
+order_by scheduled_at limit 1
+update task set status = in_progress where id=?
+
+so the problem is if same machine picks and execute the task then suppose there are 1M task schedules at a perticular second one machine queries and gets task then we need 
+a lot of machines to get all the task as we want to follow SLA that would require a lot of persistant connection that we have to have on DB which is limitaion. so even if 
+we have a lot of matchines to pick the task the no. of persistant connections would be bottleneck.
+
+so better is instead of limit 1 we batch and have lets say 10 task at executor which gets deligated to workers.n
+
+user -> API server -> DB <- executors/picker -> kafka[for diff type tasks partitan] -> workers[optimised for java, golang]
+
+Now how to decide when to scale up and scale down for that we need to have some obervability metics in DB like
+id, command, scheduled_at[index], picked_at, completed_at, failed_at
+
+when picker picks the task it updates picked_at, when worker complets it updates completed_at, if there is some runtime failure it updates failed_at and if there is some abrupt 
+failure complted and failed were null so based on previos same type task we can decide this task takes this long and decide if it has passed the execution time so it would be 
+abruptly failed.
+orchestrator can know how much tasks scheduled as of now for lets say 5 mins according to that scale up/down pickers
+scheduled_at-> picked_at [time in kafka]
+if taking more time scale up workers 
+picked_at-> completed_at [execution time]
+if taking more time scale up perticular type workers 
+
+select * from tasks
+where scheduled_at< now()+30 and picked_at ==null
+for update skip lock---exclusive skip lock
+order_by scheduled_at limit 1
+update task set status = in_progress where id=?
+
+how to make it reccuring
+just have another table jobs now the task contains task info and whatever is needed to be picked would be jobs table now more than one entry is pushed for reoccuring task
+in jobs table suppose for task1 instead if 1 future 5 entries are made, again when reccuring task get picked by picker next 5 entires from 2nd to 6 entries are made out of those
+5 are already present so 6th is added accoring to sliding window entries are added one after another.Implementation may be fire upsert command on database
+it could be we just schedule just next and suppose adding that entry somehow fails then our whole schedule for that task fails we can improvise but adding buffer is just simple 
+solve.
+
+Now as we put in stream like kafka for a particular partitian there would be n consumers which is equal to the consumer groups that we have which can't be huge as they might remain 
+idle but we need to follow the SLA, and if according to metrics we start rebalancing the partitians that would slow things down as when some partitan becomes hot analayzing 
+and balaning would take time, so there is a general pattern [streams+ brokers]for it what the consumer should do is just put the message in queues like rabbitmqs or sqs's in 
+round robin fashion there consumers can pick and do the job major notification systems are build this way as they require high fanout.  
+
+message brocker on top of relational DB
+
+similar to task schedular storage would mostly be same
+id, message, created_at[index], picked_at, deleted_at, receipt handler[index]
+
+so instead of a picker picking the message we would have a API server on top of our DB that can pick the message on demand of consumers
+[DB -> brocker API ] -> consumers
+
+select * from messages
+where picked_at == null
+and delete_at  == null
+order by created_at asc
+limit n 
+for update skip
+
+update messages 
+set picked_at = now()
+receipt_handler = uuid()
+where id = ?
+
+now the API server would be getting us the message -- gauranty we need is having a lock and skip at DB layer
+API server should have a API for deleting on the basis of receipt_handler so that only the one who picked can delete on completing
+
+how if a message is lost can be resurfaced: we can run a job with query
+update messages
+set picked_at = null
+and deleted_at = null where picked_at< now()-10 min/// or may be add this condition as OR in main query
+it will get picked automatically
+
+other gauranties
+-high throughput
+-messages can be deleted 
+-fifo 
+
+now it could be relational DB is not scalable but whatever gurantee we need according to that we can use some other DB but it is better to initially think in terms of realtional
+DB the change.
+
+youtube view counter
+
+suppose we have a rule engine to validate the view like suppose one person watches video multiple time in 5 mins so multiple views are not counted.
+
+users -> watchtime server -> kafka1 -> consumer1 -> kafka2 -> consumer2 -> counter DB
+                                                 -> rule engine
+we are using kafka1 to have high write throughput.
+here kafka1 should be partitianed by video ID to support batch writes so that we don't have micro write problems.
+why we are using kafka2 - as rule engine is a expensive compute we should have some storage for its results may be some other component want that else it has to do something
+similar.
+
+desiging Flash sale 
+HLD on yt shopify flash sale by shopify SRE
+
+LLD
+- fixed set of items
+- people come in to buy them in short window
+
+experiance would be 
+buy button -> cart -> payments
+
+storage
+items
+id,available items, total inventory
+but for each item suppose there are 1000 units don't we want to store each unit wise info like who bought, time at which it got booked so we would have another table units
+id, itemId, userid, payment id, time
+
+now as soon as user click buy button and adds item to cart userid should be updated but suppose if payment fails or user just added in cart and didn't buy so we should have
+a crone job to get the item available again after timeout
+so it looks like it is a distributed transaction problem but actually it is a fixed inventory+ contention problem where we imploy locking
+
+query 
+select * from items
+where userid = null
+and id = ?
+limit 1 order by asc
+for update skip locked
+update items 
+set time. = now() and userid = ? where id  = ? 
+
+generally flash sale have seperate infra to handle such load.
+2:42
+
+other way to design this is as soon as person click on buy add that in queue who so ever gets consumed within limit are fine rest all are discarded by consumer maybe.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                                           
